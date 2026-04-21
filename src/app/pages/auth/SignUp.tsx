@@ -1,7 +1,47 @@
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Heart, Users, Building2 } from 'lucide-react';
+import { resolveAuthenticatedRoute } from '@/lib/supabase/auth';
 
 export function SignUp() {
+  const router = useRouter();
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const redirectAuthenticatedUser = async () => {
+      try {
+        const route = await resolveAuthenticatedRoute();
+        if (route && isMounted) {
+          router.replace(route);
+          return;
+        }
+      } catch {
+        // Keep signup role selection usable if session recovery fails.
+      } finally {
+        if (isMounted) {
+          setCheckingSession(false);
+        }
+      }
+    };
+
+    void redirectAuthenticatedUser();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [router]);
+
+  if (checkingSession) {
+    return (
+      <div className="w-full max-w-2xl rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl">
+        Checking your session...
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-2xl">
       <div className="text-center mb-8">

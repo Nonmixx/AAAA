@@ -4,6 +4,8 @@ import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Heart, LayoutDashboard, Plus, Inbox, User, LogOut, Menu, Bell, X, Truck, Package, CheckCircle2 } from 'lucide-react';
+import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { getCurrentReceiverContext } from '@/lib/supabase/receiver';
 
 interface Notification {
   id: string;
@@ -22,6 +24,7 @@ const INITIAL_NOTIFS: Notification[] = [
 export function ReceiverLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [authReady, setAuthReady] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notification[]>(INITIAL_NOTIFS);
@@ -56,14 +59,53 @@ export function ReceiverLayout({ children }: { children: React.ReactNode }) {
     setNotifOpen(false);
   }, [pathname]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const validateReceiverAccess = async () => {
+      try {
+        await getCurrentReceiverContext();
+        if (isMounted) {
+          setAuthReady(true);
+        }
+      } catch (error) {
+        if (isMounted) {
+          const message = error instanceof Error ? error.message : '';
+          router.replace(message.includes('No organization found') ? '/receiver-verification' : '/login');
+        }
+      }
+    };
+
+    void validateReceiverAccess();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [router]);
+
   const markAllRead = () => setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
   const dismissNotif = (id: string) => setNotifs((prev) => prev.filter((n) => n.id !== id));
+
+  const handleLogout = async () => {
+    const supabase = getSupabaseBrowserClient();
+    await supabase.auth.signOut();
+    setMenuOpen(false);
+    router.push('/login');
+  };
 
   const NOTIF_ICON = (n: Notification) => {
     if (n.title.includes('Allocation') || n.title.includes('New')) return <Package className="w-3.5 h-3.5" />;
     if (n.title.includes('Transit')) return <Truck className="w-3.5 h-3.5" />;
     return <CheckCircle2 className="w-3.5 h-3.5" />;
   };
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#edf2f4] bg-opacity-10 text-sm text-gray-500">
+        Loading receiver portal...
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#edf2f4] bg-opacity-10">
@@ -163,7 +205,7 @@ export function ReceiverLayout({ children }: { children: React.ReactNode }) {
                     </div>
                     <div className="py-2">
                       <button
-                        onClick={() => { setMenuOpen(false); router.push('/'); }}
+                        onClick={() => void handleLogout()}
                         className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-[#da1a32] hover:bg-[#edf2f4] transition-all"
                       >
                         <LogOut className="w-4 h-4" />

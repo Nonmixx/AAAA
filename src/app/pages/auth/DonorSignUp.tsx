@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Heart, Mail, Lock, User, Phone, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { ensureProfile, ensureSessionAfterSignUp, resolveAuthenticatedRoute } from '@/lib/supabase/auth';
 
 export function DonorSignUp() {
   const router = useRouter();
@@ -15,6 +17,36 @@ export function DonorSignUp() {
     password: '',
     confirmPassword: '',
   });
+  const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const redirectAuthenticatedUser = async () => {
+      try {
+        const route = await resolveAuthenticatedRoute();
+        if (route && isMounted) {
+          router.replace(route);
+          return;
+        }
+      } catch {
+        // Keep signup usable if session recovery fails.
+      } finally {
+        if (isMounted) {
+          setCheckingSession(false);
+        }
+      }
+    };
+
+    void redirectAuthenticatedUser();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [router]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -34,10 +66,64 @@ export function DonorSignUp() {
   const strengthLabel = ['', 'Weak', 'Fair', 'Good', 'Strong'][passwordStrength];
   const strengthColor = ['', 'bg-red-400', 'bg-yellow-400', 'bg-blue-400', 'bg-green-500'][passwordStrength];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    router.push('/donor/dashboard');
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    if (form.password !== form.confirmPassword) {
+      setErrorMessage('Passwords do not match.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { error } = await supabase.auth.signUp({
+        email: form.email,
+        password: form.password,
+        options: {
+          data: {
+            full_name: form.fullName,
+            role: 'donor',
+          },
+        },
+      });
+
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      await ensureSessionAfterSignUp(form.email, form.password);
+
+      const profile = await ensureProfile({
+        role: 'donor',
+        fullName: form.fullName,
+        phone: form.phone || undefined,
+      });
+
+      if (!profile) {
+        setErrorMessage('Account created, but the profile could not be initialized.');
+        return;
+      }
+
+      const route = await resolveAuthenticatedRoute('donor');
+      router.push(route ?? '/donor/dashboard');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to create account.');
+    } finally {
+      setLoading(false);
+    }
   };
+
+  if (checkingSession) {
+    return (
+      <div className="w-full max-w-md rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl">
+        Checking your session...
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-md">
@@ -195,13 +281,25 @@ export function DonorSignUp() {
             </label>
           </div>
 
+          {errorMessage && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
+
+          {successMessage && (
+            <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+              {successMessage}
+            </div>
+          )}
+
           {/* Submit */}
           <button
             type="submit"
-            disabled={!agreed || (!!form.confirmPassword && form.password !== form.confirmPassword)}
+            disabled={loading || !agreed || (!!form.confirmPassword && form.password !== form.confirmPassword)}
             className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Create Account
+            {loading ? 'Creating Account...' : 'Create Account'}
           </button>
         </form>
 
