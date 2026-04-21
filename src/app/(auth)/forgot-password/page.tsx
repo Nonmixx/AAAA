@@ -1,0 +1,12 @@
+'use client';
+
+import dynamic from 'next/dynamic';
+
+const ForgotPassword = dynamic(
+  () => import('../../pages/auth/ForgotPassword').then(mod => ({ default: mod.ForgotPassword })),
+  { ssr: false }
+);
+
+export default function ForgotPasswordPage() {
+  return <ForgotPassword />;
+}
