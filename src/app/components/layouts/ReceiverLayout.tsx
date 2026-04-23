@@ -3,20 +3,45 @@
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Heart, LayoutDashboard, Plus, Inbox, User, LogOut, Menu, Bell, X, Truck, Package, CheckCircle2 } from 'lucide-react';
+import { Heart, LayoutDashboard, Plus, Inbox, User, LogOut, Menu, Bell, X } from 'lucide-react';
 
 interface Notification {
   id: string;
   title: string;
   desc: string;
+  details: string;
   time: string;
   read: boolean;
 }
 
 const INITIAL_NOTIFS: Notification[] = [
-  { id: '1', title: 'New Allocation Incoming', desc: 'Food Packs (60 units) from Sarah Johnson — AI matched', time: '30 min ago', read: false },
-  { id: '2', title: 'Delivery In Transit', desc: 'Blankets from Lisa Wong are on the way — est. Apr 21', time: '2 hrs ago', read: false },
-  { id: '3', title: '✅ Delivered', desc: 'School Supplies from Michael Chen have been delivered', time: '1 day ago', read: true },
+  {
+    id: '1',
+    title: 'New Allocation Incoming',
+    desc: 'Food Packs (60 units) from Sarah Johnson — AI matched',
+    details:
+      'Donation ID DON-1048. Suggested split reviewed by AI: your food program (primary) vs overflow pantry. Accept or request re-balance within 48 hours. Donor contact is masked until you confirm.',
+    time: '30 min ago',
+    read: false,
+  },
+  {
+    id: '2',
+    title: 'Delivery In Transit',
+    desc: 'Blankets from Lisa Wong are on the way — est. Apr 21',
+    details:
+      'Carrier: Metro Logistics. Tracking ML-2291. ETA Apr 21 14:00–16:00. Receiving dock B — have staff ready to sign POD. Cold chain not required for this SKU.',
+    time: '2 hrs ago',
+    read: false,
+  },
+  {
+    id: '3',
+    title: '✅ Delivered',
+    desc: 'School Supplies from Michael Chen have been delivered',
+    details:
+      'POD uploaded and donor notified automatically. Inventory updated: +45 kits in “School Supplies”. No open actions on this shipment.',
+    time: '1 day ago',
+    read: true,
+  },
 ];
 
 export function ReceiverLayout({ children }: { children: React.ReactNode }) {
@@ -24,6 +49,7 @@ export function ReceiverLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [expandedNotifId, setExpandedNotifId] = useState<string | null>(null);
   const [notifs, setNotifs] = useState<Notification[]>(INITIAL_NOTIFS);
   const menuRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -56,13 +82,15 @@ export function ReceiverLayout({ children }: { children: React.ReactNode }) {
     setNotifOpen(false);
   }, [pathname]);
 
-  const markAllRead = () => setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
-  const dismissNotif = (id: string) => setNotifs((prev) => prev.filter((n) => n.id !== id));
+  useEffect(() => {
+    if (!notifOpen) setExpandedNotifId(null);
+  }, [notifOpen]);
 
-  const NOTIF_ICON = (n: Notification) => {
-    if (n.title.includes('Allocation') || n.title.includes('New')) return <Package className="w-3.5 h-3.5" />;
-    if (n.title.includes('Transit')) return <Truck className="w-3.5 h-3.5" />;
-    return <CheckCircle2 className="w-3.5 h-3.5" />;
+  const markAllRead = () => setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
+  const markOneRead = (id: string) => setNotifs((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+  const dismissNotif = (id: string) => {
+    setExpandedNotifId((cur) => (cur === id ? null : cur));
+    setNotifs((prev) => prev.filter((n) => n.id !== id));
   };
 
   return (
@@ -108,22 +136,58 @@ export function ReceiverLayout({ children }: { children: React.ReactNode }) {
                       )}
                     </div>
                     <div className="max-h-72 overflow-y-auto">
-                      {notifs.map((n) => (
-                        <div
-                          key={n.id}
-                          className={`flex items-start gap-3 px-4 py-3 border-b border-[#edf2f4] last:border-b-0 ${n.read ? '' : 'bg-[#edf2f4] bg-opacity-60'}`}
-                        >
-                          <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.read ? 'bg-gray-300' : 'bg-[#da1a32]'}`} />
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-xs font-medium ${n.read ? 'text-gray-600' : 'text-[#000000]'}`}>{n.title}</p>
-                            <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{n.desc}</p>
-                            <p className="text-[10px] text-gray-400 mt-1">{n.time}</p>
+                      {notifs.map((n) => {
+                        const expanded = expandedNotifId === n.id;
+                        return (
+                          <div
+                            key={n.id}
+                            className={`border-b border-[#edf2f4] last:border-b-0 ${n.read ? '' : 'bg-[#edf2f4] bg-opacity-60'}`}
+                          >
+                            <div className="flex items-start gap-3 px-4 py-3">
+                              <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.read ? 'bg-gray-300' : 'bg-[#da1a32]'}`} />
+                              <div className="flex-1 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedNotifId((cur) => (cur === n.id ? null : n.id))}
+                                  className="w-full text-left rounded-lg -m-1 p-1 hover:bg-black/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#da1a32]/40"
+                                >
+                                  <p className={`text-xs font-medium ${n.read ? 'text-gray-600' : 'text-[#000000]'}`}>{n.title}</p>
+                                  <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{n.desc}</p>
+                                  <p className="text-[10px] text-gray-400 mt-1">{n.time}</p>
+                                  <p className="text-[10px] text-[#da1a32] font-medium mt-1">{expanded ? 'Hide details' : 'Show details'}</p>
+                                </button>
+                                {expanded ? (
+                                  <div className="mt-2 pt-2 border-t border-[#edf2f4] space-y-2">
+                                    <p className="text-xs text-gray-600 leading-relaxed">{n.details}</p>
+                                    {!n.read ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => markOneRead(n.id)}
+                                        className="inline-flex items-center justify-center rounded-lg border border-[#da1a32] bg-white px-3 py-1.5 text-xs font-semibold text-[#da1a32] shadow-sm transition-colors hover:bg-[#da1a32] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#da1a32] focus-visible:ring-offset-1"
+                                      >
+                                        Mark as read
+                                      </button>
+                                    ) : (
+                                      <span className="text-[10px] font-medium text-gray-400">Read</span>
+                                    )}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  dismissNotif(n.id);
+                                }}
+                                className="text-gray-300 hover:text-gray-500 flex-shrink-0 mt-0.5 p-1 rounded-md hover:bg-black/5"
+                                aria-label="Dismiss notification"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
-                          <button onClick={() => dismissNotif(n.id)} className="text-gray-300 hover:text-gray-500 flex-shrink-0 mt-0.5">
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                       {notifs.length === 0 && (
                         <p className="text-sm text-gray-400 text-center py-8">No notifications</p>
                       )}

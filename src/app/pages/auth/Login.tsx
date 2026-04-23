@@ -1,19 +1,25 @@
 import { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, Lock, Heart } from 'lucide-react';
 
 export function Login() {
   const router = useRouter();
-  const [role, setRole] = useState<'donor' | 'receiver'>('donor');
+  const searchParams = useSearchParams();
+  const [role, setRole] = useState<'donor' | 'receiver' | 'corporate_partner'>('donor');
+  const showRegisteredBanner = searchParams.get('registered') === '1';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (role === 'donor') {
-      router.push('/donor/dashboard');
-    } else {
-      router.push('/receiver');
+
+    const redirectTarget = searchParams.get('redirect');
+    if (redirectTarget?.startsWith('/')) {
+      return router.push(redirectTarget);
     }
+
+    if (role === 'donor') return router.push('/donor/dashboard');
+    if (role === 'receiver') return router.push('/receiver');
+    return router.push('/corporate/dashboard');
   };
 
   return (
@@ -27,6 +33,11 @@ export function Login() {
       </div>
 
       <div className="bg-white rounded-lg shadow-xl p-8">
+        {showRegisteredBanner ? (
+          <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm font-medium text-green-800">
+            🟢 Registration successful! Please log in with your new credentials.
+          </div>
+        ) : null}
         {/* Role Toggle */}
         <div className="flex rounded-lg border-2 border-[#e5e5e5] overflow-hidden mb-6">
           <button
@@ -38,7 +49,7 @@ export function Login() {
                 : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
           >
-            I'm a Donor
+            Donor
           </button>
           <button
             type="button"
@@ -49,7 +60,18 @@ export function Login() {
                 : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
           >
-            I'm an Organization
+            Receiver
+          </button>
+          <button
+            type="button"
+            onClick={() => setRole('corporate_partner')}
+            className={`flex-1 py-2.5 text-sm font-medium transition-all ${
+              role === 'corporate_partner'
+                ? 'bg-[#da1a32] text-white'
+                : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
+            }`}
+          >
+            Corporate Partner
           </button>
         </div>
 
@@ -88,7 +110,7 @@ export function Login() {
             type="submit"
             className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg"
           >
-            Login as {role === 'donor' ? 'Donor' : 'Organization'}
+            Login as {role === 'donor' ? 'Donor' : role === 'receiver' ? 'Receiver' : 'Corporate Partner'}
           </button>
         </form>
 

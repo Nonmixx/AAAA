@@ -1,9 +1,12 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import {
   Sparkles, Send, ImagePlus, Bot, User, CheckCircle2,
   XCircle, Package, MapPin, Building2, Brain, RotateCcw, AlertCircle,
-  Mic, Paperclip, MicOff,
+  Mic, Paperclip, MicOff, Loader2, Scale,
 } from 'lucide-react';
+import type { DonationPlanPayload, PlanReceiver } from '../../lib/donation-plan-types';
+import type { DonationImageAnalysisResult, PhotoVerificationStatus } from '../../lib/donation-image-analysis';
 
 type Condition = 'Good' | 'Worn' | 'Damaged';
 type Stage = 'greeting' | 'details' | 'awaiting_image' | 'analyzing' | 'result_suitable' | 'result_unsuitable';
@@ -16,6 +19,12 @@ interface ChatMessage {
   type: 'text' | 'image' | 'analysis';
   condition?: Condition;
   suitable?: boolean;
+  /** Vision screening: unrelated photo vs wrong category vs OK. */
+  photoVerification?: PhotoVerificationStatus;
+  /** Short model description of what appears in the image. */
+  visibleSummary?: string;
+  /** Server-ranked NGO matches for this assistant turn (chat API). */
+  matchedAgents?: PlanReceiver[];
 }
 
 const CONDITION_COLORS: Record<Condition, string> = {
@@ -24,8 +33,9 @@ const CONDITION_COLORS: Record<Condition, string> = {
   Damaged: 'bg-red-50 text-[#da1a32] border-red-200',
 };
 
-const suggestedReceivers = [
+const FALLBACK_ALLOCATION: PlanReceiver[] = [
   {
+    ngoId: 'ngo_hope_orphanage',
     name: 'Hope Orphanage',
     location: 'Kuala Lumpur • 2.5 km',
     allocation: 60,
@@ -34,6 +44,7 @@ const suggestedReceivers = [
     reason: ['High urgency — disaster-affected families', 'Higher daily demand', 'Fewer recent donations received'],
   },
   {
+    ngoId: 'ngo_care_foundation',
     name: 'Care Foundation',
     location: 'Petaling Jaya • 5.1 km',
     allocation: 40,
@@ -42,6 +53,72 @@ const suggestedReceivers = [
     reason: ['Consistent need pattern', 'Serves elderly community', 'Good delivery accessibility'],
   },
 ];
+
+/** Classify donation from user text; returns updated label (caller passes current label as fallback). */
+function resolveDetectedCategory(text: string, current: string): string {
+  const t = text.trim();
+  if (!t) return current;
+  const lower = t.toLowerCase();
+  if (lower.includes('food') || lower.includes('rice') || lower.includes('pack')) return 'Food Packs';
+  if (lower.includes('cloth') || lower.includes('shirt') || lower.includes('wear')) return 'Clothing';
+  if (lower.includes('book') || lower.includes('school') || lower.includes('suppli')) return 'School Supplies';
+  if (lower.includes('blank') || lower.includes('pillow') || lower.includes('bed')) return 'Blankets & Bedding';
+  if (lower.includes('medic') || lower.includes('drug')) return 'Medical Supplies';
+  return current;
+}
+
+function buildChatPayload(msgs: ChatMessage[]): { role: 'user' | 'assistant'; content: string }[] {
+  const out: { role: 'user' | 'assistant'; content: string }[] = [];
+  for (const m of msgs) {
+    if (m.type === 'analysis') continue;
+    if (m.type === 'image') {
+      out.push({ role: 'user', content: '[User shared a donation item photo in the thread]' });
+      continue;
+    }
+    if (m.type === 'text' && m.text) {
+      out.push({ role: m.role === 'bot' ? 'assistant' : 'user', content: m.text });
+    }
+  }
+  return out.slice(-24);
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const r = reader.result as string;
+      const i = r.indexOf(',');
+      resolve(i >= 0 ? r.slice(i + 1) : r);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Downscale large photos before vision API (browser-only). */
+async function prepareImageForAnalysis(file: File): Promise<{ base64: string; mimeType: string }> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Only image files can be analyzed for donation items.');
+  }
+  const maxEdge = 1400;
+  const bitmap = await createImageBitmap(file);
+  const { width, height } = bitmap;
+  const scale = Math.min(1, maxEdge / Math.max(width, height, 1));
+  const w = Math.round(width * scale);
+  const h = Math.round(height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not read image.');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('encode failed'))), mimeType, 0.85);
+  });
+  const base64 = await blobToBase64(blob);
+  return { base64, mimeType };
+}
 
 function TypingDots() {
   return (
@@ -79,6 +156,154 @@ function UserBubble({ children }: { children: React.ReactNode }) {
   );
 }
 
+function matchedAgentHref(ngoId: string) {
+  return `/donor/needs/${encodeURIComponent(ngoId)}`;
+}
+
+/** Sidebar row: compact match card → receiver detail. */
+function MatchedAgentSidebarRow({ r, mutedBg }: { r: PlanReceiver; mutedBg?: boolean }) {
+  return (
+    <li
+      className={`rounded-lg border border-[#e5e5e5] shadow-sm overflow-hidden ${
+        mutedBg ? 'bg-[#edf2f4]/40' : 'bg-white'
+      }`}
+    >
+      <Link
+        href={matchedAgentHref(r.ngoId)}
+        className={`flex items-center justify-between gap-2 px-3 py-2 transition-all hover:ring-1 hover:ring-[#da1a32]/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#da1a32] ${
+          mutedBg ? 'hover:bg-white' : 'hover:bg-[#fef2f2]'
+        }`}
+      >
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-[#000000] truncate">{r.name}</p>
+          <p className="text-[10px] text-gray-500 truncate flex items-center gap-0.5">
+            <MapPin className="w-3 h-3 flex-shrink-0" />
+            {r.location}
+          </p>
+        </div>
+        <span className="text-sm font-bold text-[#da1a32] flex-shrink-0">{r.percent}%</span>
+      </Link>
+    </li>
+  );
+}
+
+/** Chat: expanded match card → receiver detail. */
+
+function parseDistanceKm(locationLabel: string): number | null {
+  const m = locationLabel.match(/([\d.]+)\s*km/i);
+  if (!m?.[1]) return null;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function distanceTierLabel(locationLabel: string): string {
+  const km = parseDistanceKm(locationLabel);
+  if (km == null) return 'Unknown';
+  if (km <= 5) return 'Near';
+  if (km <= 12) return 'Moderate';
+  return 'Far';
+}
+
+function guessDemandMatchLine(r: PlanReceiver): string {
+  const blob = `${r.reason.join(' ')} ${r.name}`.toLowerCase();
+  if (/food|meal|rice|formula|pantry/.test(blob)) return 'Food needed';
+  if (/medical|clinic|health|hygiene/.test(blob)) return 'Medical / hygiene needed';
+  if (/book|school|education|library/.test(blob)) return 'Education support needed';
+  if (/shelter|blanket|bedding|night/.test(blob)) return 'Shelter essentials needed';
+  return 'Catalog demand matched';
+}
+
+function urgentContextLine(r: PlanReceiver): string {
+  const blob = r.reason.join(' ');
+  const gap = r.reason[1] || '';
+  if (/flood|disaster|displaced/i.test(blob)) return 'Flood impact';
+  if (/critical|critically short|running low|waitlist|short/i.test(gap)) return 'Critical shortage';
+  if (/nightly arrivals|urgent|high urgency/i.test(blob)) return 'High active demand';
+  return 'Needs-based prioritization';
+}
+
+function fairnessLine(r: PlanReceiver): string {
+  if (r.percent >= 60) return 'Low recent donations';
+  if (r.percent >= 45) return 'Balanced partner coverage';
+  return 'Complements primary allocation';
+}
+
+function VisualReasoningPanel({ r }: { r: PlanReceiver }) {
+  const urgencyTone =
+    r.urgency === 'High'
+      ? 'text-[#da1a32]'
+      : r.urgency === 'Low'
+        ? 'text-gray-600'
+        : 'text-amber-700';
+  const demandLine = guessDemandMatchLine(r);
+  const distanceTier = distanceTierLabel(r.location);
+
+  return (
+    <div className="mt-3 rounded-xl border border-[#e5e5e5] bg-white p-3">
+      <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-2">Visual reasoning</p>
+      <div className="grid sm:grid-cols-2 gap-2">
+        <div className="rounded-lg bg-red-50 border border-red-100 px-2.5 py-2 text-xs">
+          <span className="font-semibold">Urgency:</span>{' '}
+          <span className={urgencyTone}>{r.urgency === 'High' ? '🔴 High' : r.urgency === 'Low' ? '🟢 Low' : '🟡 Medium'}</span>
+          <div className="text-[10px] text-gray-600 mt-1">{urgentContextLine(r)}</div>
+        </div>
+        <div className="rounded-lg bg-green-50 border border-green-100 px-2.5 py-2 text-xs">
+          <span className="font-semibold">Demand Match:</span> ✅ {demandLine}
+          <div className="text-[10px] text-gray-600 mt-1">Reasoning from catalog + donor intent</div>
+        </div>
+        <div className="rounded-lg bg-[#edf2f4] border border-[#e5e5e5] px-2.5 py-2 text-xs">
+          <span className="font-semibold">Fairness:</span> ⚖️ {fairnessLine(r)}
+          <div className="text-[10px] text-gray-600 mt-1">Prevents over-concentration on one partner</div>
+        </div>
+        <div className="rounded-lg bg-[#edf2f4] border border-[#e5e5e5] px-2.5 py-2 text-xs">
+          <span className="font-semibold">Distance:</span> 📍 {distanceTier}
+          <div className="text-[10px] text-gray-600 mt-1">{r.location}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MatchedAgentChatCard({ r }: { r: PlanReceiver }) {
+  return (
+    <li className="rounded-lg border border-[#e5e5e5] overflow-hidden">
+      <Link
+        href={matchedAgentHref(r.ngoId)}
+        className="block bg-[#edf2f4]/40 px-3 py-2 transition-all hover:bg-white hover:border-[#da1a32] hover:ring-1 hover:ring-[#da1a32]/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#da1a32]"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-[#000000]">{r.name}</p>
+            <p className="text-[10px] text-gray-500 flex items-center gap-0.5 mt-0.5">
+              <MapPin className="w-3 h-3 flex-shrink-0" />
+              {r.location}
+            </p>
+          </div>
+          <span className="text-xs font-bold text-[#da1a32] flex-shrink-0">{r.percent}%</span>
+        </div>
+        <p className="text-[10px] text-gray-600 mt-1.5 leading-snug">{r.reason[0]}</p>
+        {r.reason[1] ? (
+          <p className="text-[10px] text-gray-400 mt-1 leading-snug border-t border-[#e5e5e5] pt-1.5">
+            <span className="font-medium text-gray-500">Catalog need (goods / programs): </span>
+            {r.reason[1]}
+          </p>
+        ) : null}
+        <span
+          className={`inline-block mt-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded border ${
+            r.urgency === 'High'
+              ? 'bg-red-50 text-red-700 border-red-200'
+              : r.urgency === 'Low'
+                ? 'bg-gray-50 text-gray-600 border-gray-200'
+                : 'bg-amber-50 text-amber-800 border-amber-200'
+          }`}
+        >
+          Urgency: {r.urgency}
+        </span>
+      </Link>
+    </li>
+  );
+}
+
 export function AIDonation() {
   const [stage, setStage] = useState<Stage>('greeting');
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -86,7 +311,7 @@ export function AIDonation() {
       id: '0',
       role: 'bot',
       type: 'text',
-      text: "Hi there! 👋 I'm your AI Donation Assistant. Tell me what you'd like to donate today and I'll help find the best match for your contribution!",
+      text: "Hi there! 👋 I’m your AI Donation Assistant for **item donations**. Tell me what item(s) you want to donate, then upload a clear photo so I can check condition and match the best NGOs.",
     },
   ]);
   const [inputText, setInputText] = useState('');
@@ -94,11 +319,34 @@ export function AIDonation() {
   const [detectedItem, setDetectedItem] = useState('Clothing / Mixed Items');
   const [isRecording, setIsRecording] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null);
+  const [pendingAttachFiles, setPendingAttachFiles] = useState<File[]>([]);
   const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
+  const [glmPlan, setGlmPlan] = useState<DonationPlanPayload | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const detectedItemRef = useRef(detectedItem);
+  detectedItemRef.current = detectedItem;
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const attachInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
+  const transcriptRef = useRef('');
+
+  const displayReceivers = useMemo(
+    () => (glmPlan?.receivers?.length ? glmPlan.receivers : FALLBACK_ALLOCATION),
+    [glmPlan],
+  );
+
+  /** Latest chat API suggestions — shown in Donation Summary before photo / plan allocation. */
+  const sidebarMatchedAgents = useMemo((): PlanReceiver[] | null => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role === 'bot' && m.type === 'text' && m.matchedAgents?.length) {
+        return m.matchedAgents;
+      }
+    }
+    return null;
+  }, [messages]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -125,107 +373,219 @@ export function AIDonation() {
     ]);
   };
 
-  const simulateBotResponse = (text: string, delay = 1200, extra?: Partial<ChatMessage>) => {
+  const startImageConditionScan = async (file: File) => {
+    setStage('analyzing');
     setIsTyping(true);
-    setTimeout(() => {
-      setIsTyping(false);
-      addBotMessage(text, extra);
-    }, delay);
-  };
 
-  const handleSend = () => {
-    const trimmed = inputText.trim();
-    if (!trimmed) return;
+    try {
+      const { base64, mimeType } = await prepareImageForAnalysis(file);
+      const res = await fetch('/api/donation-assistant/analyze-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64,
+          mimeType,
+          detectedItem: detectedItemRef.current,
+          transcript: transcriptRef.current.trim(),
+        }),
+      });
+      const json = (await res.json()) as { analysis?: DonationImageAnalysisResult; error?: string };
+      const analysis = json.analysis;
+      if (!analysis) {
+        throw new Error(json.error || 'No analysis');
+      }
 
-    // Detect item type from user message
-    const lower = trimmed.toLowerCase();
-    if (lower.includes('food') || lower.includes('rice') || lower.includes('pack')) setDetectedItem('Food Packs');
-    else if (lower.includes('cloth') || lower.includes('shirt') || lower.includes('wear')) setDetectedItem('Clothing');
-    else if (lower.includes('book') || lower.includes('school') || lower.includes('suppli')) setDetectedItem('School Supplies');
-    else if (lower.includes('blank') || lower.includes('pillow') || lower.includes('bed')) setDetectedItem('Blankets & Bedding');
-    else if (lower.includes('medic') || lower.includes('drug')) setDetectedItem('Medical Supplies');
+      const verification = analysis.verification;
+      const condition: Condition = analysis.condition;
+      const okForAllocation = verification === 'passed' && condition !== 'Damaged';
 
-    addUserMessage(trimmed);
-    setInputText('');
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-analysis`,
+          role: 'bot',
+          type: 'analysis',
+          condition,
+          suitable: okForAllocation,
+          photoVerification: verification,
+          visibleSummary: analysis.visibleSummary,
+        },
+      ]);
 
-    if (stage === 'greeting') {
-      setStage('details');
-      simulateBotResponse(
-        "Thanks for sharing! 📝 To assess your donation properly, I have a few quick follow-up questions:\n\n📦 How many items do you have?\n📍 What's your pickup / drop-off location?\n📸 Could you upload a photo of the item so I can assess its condition and suitability?",
-        1400,
-      );
-    } else if (stage === 'details') {
+      if (verification !== 'passed') {
+        setStage('awaiting_image');
+        setTimeout(() => {
+          addBotMessage(
+            `**Please send another photo.**\n\n${analysis.guidance}\n\nUse one clear, well-lit shot of the **actual** items matching “**${detectedItemRef.current}**” (not screenshots, documents, or unrelated scenes).`,
+          );
+        }, 0);
+        return;
+      }
+
+      if (condition === 'Damaged') {
+        setStage('result_unsuitable');
+        setTimeout(() => {
+          addBotMessage(
+            analysis.guidance ||
+              '❌ This item looks **damaged or unusable** for donation. Charities need goods that are at least **fair** and safe. Please try again with something in **Good** or gently **Worn** condition.',
+          );
+        }, 0);
+        return;
+      }
+
+      setStage('result_suitable');
+      setPlanLoading(true);
+      void (async () => {
+        try {
+          const planRes = await fetch('/api/donation-assistant/plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              transcript: transcriptRef.current.trim() || '(no text yet)',
+              detectedItem: detectedItemRef.current,
+              condition,
+            }),
+          });
+          const data = (await planRes.json()) as DonationPlanPayload;
+          if (Array.isArray(data.receivers) && data.receivers.length > 0) {
+            setGlmPlan(data);
+          } else {
+            setGlmPlan(null);
+          }
+        } catch {
+          setGlmPlan(null);
+        } finally {
+          setPlanLoading(false);
+        }
+      })();
+      setTimeout(() => {
+        addBotMessage(
+          `✅ Photo accepted: ${analysis.visibleSummary} Z.AI GLM is matching NGO demand, urgency, and split — your allocation appears below when ready.`,
+        );
+      }, 400);
+    } catch {
       setStage('awaiting_image');
-      simulateBotResponse(
-        "Got it! Now please upload a photo of the item using the 📎 button below so I can verify its condition.",
-        1200,
-      );
-    } else if (stage === 'awaiting_image') {
-      simulateBotResponse(
-        "Please upload a photo of the item first so I can assess its condition. 📸 Use the image button below!",
-        900,
-      );
+      setTimeout(() => {
+        addBotMessage(
+          'We could not analyze that image from your device. Use a **JPEG or PNG** under ~4 MB, then send again with a clear photo of your **donation item**.',
+        );
+      }, 0);
+    } finally {
+      setIsTyping(false);
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSend = async () => {
+    if (stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
+    if (isTyping) return;
+
+    const trimmed = inputText.trim();
+    const hasPendingAttach = pendingAttachFiles.length > 0;
+
+    if (pendingImage) {
+      if (stage === 'greeting') {
+        addBotMessage(
+          'Start by typing what you would like to donate and press **Send**. Then queue a clear item photo and press **Send** again for screening.',
+        );
+        return;
+      }
+
+      const captionTrim = trimmed;
+      const categoryForPhoto = captionTrim ? resolveDetectedCategory(captionTrim, detectedItem) : detectedItem;
+
+      const { file, preview } = pendingImage;
+      setPendingImage(null);
+      setInputText('');
+
+      if (trimmed) {
+        const nd = resolveDetectedCategory(trimmed, detectedItem);
+        setDetectedItem(nd);
+        addUserMessage(trimmed);
+        transcriptRef.current += `\nUser: ${trimmed}`;
+      }
+
+      addUserMessage('', { type: 'image', imageUrl: preview });
+      transcriptRef.current += '\nUser: [submitted item photo for condition check]';
+
+      void startImageConditionScan(file);
+      return;
+    }
+
+    if (!trimmed && !hasPendingAttach) return;
+
+    let userLine = trimmed;
+    if (hasPendingAttach) {
+      const names = pendingAttachFiles.map((f) => f.name).join(', ');
+      const attachLine = `📎 Attached: ${names}`;
+      userLine = trimmed ? `${trimmed}\n\n${attachLine}` : attachLine;
+      setAttachedFiles((prev) => [...prev, ...pendingAttachFiles]);
+      setPendingAttachFiles([]);
+    }
+
+    let nextDetected = detectedItem;
+    if (trimmed) {
+      nextDetected = resolveDetectedCategory(trimmed, detectedItem);
+      setDetectedItem(nextDetected);
+    }
+
+    let nextStage: Stage = stage;
+    if (stage === 'greeting') nextStage = 'details';
+    else if (stage === 'details') {
+      nextStage = 'awaiting_image';
+    } else if (stage === 'awaiting_image') {
+      nextStage = 'awaiting_image';
+    }
+
+    const userMsg: ChatMessage = {
+      id: `${Date.now()}-u`,
+      role: 'user',
+      type: 'text',
+      text: userLine,
+    };
+    const nextThread = [...messages, userMsg];
+    setMessages(nextThread);
+    transcriptRef.current += `\nUser: ${userLine}`;
+    setInputText('');
+    setStage(nextStage);
+
+    setIsTyping(true);
+    try {
+      const payload = buildChatPayload(nextThread);
+      const res = await fetch('/api/donation-assistant/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: payload,
+          stage: nextStage,
+          detectedItem: nextDetected,
+          userLatest: userLine,
+        }),
+      });
+      const data = (await res.json()) as {
+        reply?: string;
+        matchedAgents?: PlanReceiver[];
+      };
+      const reply = data.reply?.trim() || 'Thanks — let me know how else I can help.';
+      const agents =
+        Array.isArray(data.matchedAgents) && data.matchedAgents.length > 0 ? data.matchedAgents : undefined;
+      const extra: Partial<ChatMessage> = {};
+      if (agents) extra.matchedAgents = agents;
+      addBotMessage(reply, Object.keys(extra).length ? extra : undefined);
+    } catch {
+      addBotMessage('I could not reach the assistant just now. Please try again in a moment.');
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handleImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || stage === 'result_suitable' || stage === 'result_unsuitable') return;
+    if (!file || stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing') return;
 
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const imageUrl = ev.target?.result as string;
-      addUserMessage('', { type: 'image', imageUrl });
-
-      setStage('analyzing');
-      setIsTyping(true);
-
-      // Simulate AI analysis (2.5 seconds)
-      setTimeout(() => {
-        setIsTyping(false);
-
-        // Determine condition (deterministic based on file name for demo)
-        const fname = file.name.toLowerCase();
-        let condition: Condition = 'Good';
-        if (fname.includes('damage') || fname.includes('broken') || fname.includes('torn')) {
-          condition = 'Damaged';
-        } else if (fname.includes('worn') || fname.includes('old')) {
-          condition = 'Worn';
-        } else {
-          // Random for demo: 65% Good, 25% Worn, 10% Damaged
-          const r = Math.random();
-          condition = r < 0.65 ? 'Good' : r < 0.90 ? 'Worn' : 'Damaged';
-        }
-
-        const suitable = condition !== 'Damaged';
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            role: 'bot',
-            type: 'analysis',
-            condition,
-            suitable,
-          },
-        ]);
-
-        if (suitable) {
-          setStage('result_suitable');
-          setTimeout(() => {
-            addBotMessage(
-              "✅ Great news! Your item is suitable for donation. I've identified the best receivers for you below. Review the allocation and confirm when ready!",
-            );
-          }, 600);
-        } else {
-          setStage('result_unsuitable');
-          setTimeout(() => {
-            addBotMessage(
-              "❌ Unfortunately, this item is not suitable for donation because it appears to be damaged or unusable. Receiving organisations require items in at least fair condition to ensure safety and quality for recipients. Please consider donating items in better condition — even worn or gently used items are welcome!",
-            );
-          }, 600);
-        }
-      }, 2500);
+      const preview = ev.target?.result as string;
+      setPendingImage({ file, preview });
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -233,13 +593,18 @@ export function AIDonation() {
 
   const handleReset = () => {
     setStage('greeting');
+    transcriptRef.current = '';
+    setGlmPlan(null);
+    setPlanLoading(false);
+    setPendingImage(null);
+    setPendingAttachFiles([]);
     setDetectedItem('Clothing / Mixed Items');
     setMessages([
       {
         id: '0',
         role: 'bot',
         type: 'text',
-        text: "Hi there! 👋 I'm your AI Donation Assistant. Tell me what you'd like to donate today and I'll help find the best match for your contribution!",
+        text: "Hi there! 👋 I’m your AI Donation Assistant for **item donations**. Tell me what item(s) you want to donate, then upload a clear photo so I can check condition and match the best NGOs.",
       },
     ]);
     setInputText('');
@@ -251,7 +616,7 @@ export function AIDonation() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') handleSend();
+    if (e.key === 'Enter') void handleSend();
   };
 
   const handleVoiceInput = async () => {
@@ -351,38 +716,60 @@ export function AIDonation() {
     }
   };
 
+  const lastAnalysis = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.type === 'analysis') return m;
+    }
+    return null;
+  }, [messages]);
+
   const handleFileAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length > 0) {
-      setAttachedFiles(prev => [...prev, ...files]);
-      // Auto-send message with attachments
-      const fileNames = files.map(f => f.name).join(', ');
-      addUserMessage(`📎 Attached: ${fileNames}`);
-
-      if (stage === 'greeting') {
-        setStage('details');
-        simulateBotResponse(
-          "Thanks for sharing! 📝 To assess your donation properly, I have a few quick follow-up questions:\n\n📦 How many items do you have?\n📍 What's your pickup / drop-off location?\n📸 Could you upload a photo of the item so I can assess its condition and suitability?",
-          1400,
-        );
-      } else if (stage === 'details') {
-        setStage('awaiting_image');
-        simulateBotResponse(
-          "Got it! Now please upload a photo of the item using the 📎 button below so I can verify its condition.",
-          1200,
-        );
-      }
+      setPendingAttachFiles((prev) => [...prev, ...files]);
     }
     e.target.value = '';
   };
 
+  const needsPhotoResend =
+    stage === 'awaiting_image' &&
+    lastAnalysis?.photoVerification &&
+    lastAnalysis.photoVerification !== 'passed';
+
+  const stageSummaryLabel =
+    stage === 'greeting'
+      ? 'Getting started'
+      : stage === 'details'
+        ? 'Collecting details'
+        : stage === 'awaiting_image'
+          ? needsPhotoResend
+            ? 'Resend item photo'
+            : 'Awaiting photo'
+          : stage === 'analyzing'
+            ? 'Analyzing…'
+            : stage === 'result_suitable'
+              ? 'Ready to allocate'
+              : stage === 'result_unsuitable'
+                ? 'Not suitable'
+                : '';
+
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <div className="max-w-7xl mx-auto p-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-3xl mb-1 text-[#000000] font-bold">AI Donation Assistant</h1>
-          <p className="text-gray-500">Chat with our AI to find the best match for your donation</p>
+          <p className="text-gray-500">
+            Chat with our AI to find the best match for your donation. Allocation planning uses{' '}
+            <span className="text-[#000000] font-medium">Z.AI GLM</span> when{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_KEY</code> is set; otherwise a smart
+            on-device fallback runs. Item photos are checked with a{' '}
+            <span className="text-[#000000] font-medium">vision model</span> (
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_VISION_MODEL</code>, default{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">glm-4v-plus</code>) so unrelated or mismatched
+            images are rejected.
+          </p>
         </div>
         <button
           onClick={handleReset}
@@ -414,8 +801,175 @@ export function AIDonation() {
         </div>
       )}
 
-      {/* Chat Window */}
-      <div className="bg-white rounded-2xl border-2 border-[#e5e5e5] shadow-sm overflow-hidden flex flex-col" style={{ height: '65vh' }}>
+      {/* Single combined workspace: summary + chat */}
+      <div className="rounded-2xl border-2 border-[#e5e5e5] shadow-sm overflow-hidden flex flex-col lg:flex-row lg:items-stretch lg:h-[65vh] bg-white">
+        {/* Donation Summary — left */}
+        <aside className="w-full lg:w-[min(100%,320px)] lg:flex-shrink-0 flex flex-col min-h-0 order-2 lg:order-1 border-t lg:border-t-0 lg:border-r border-[#e5e5e5] bg-[#f4f6f8]">
+            <div className="px-4 py-3 border-b border-[#e5e5e5] bg-[#edf2f4]/60 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 bg-[#000000] rounded-xl flex items-center justify-center flex-shrink-0">
+                  <Package className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-[#000000]">Donation Summary</h2>
+                  <p className="text-xs text-gray-500">Live from your chat</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 max-h-[42vh] lg:max-h-none">
+              <div>
+                <span className="text-xs text-gray-500 uppercase tracking-wide">Progress</span>
+                <p className="text-sm font-medium text-[#000000] mt-0.5">{stageSummaryLabel}</p>
+              </div>
+
+              {!lastAnalysis ? (
+                <>
+                  <div className="rounded-xl border border-dashed border-[#e5e5e5] bg-[#edf2f4]/30 p-4 text-center">
+                    <p className="text-xs text-gray-500 leading-relaxed">
+                      Tell the assistant what you are donating, then queue a <strong>photo</strong> (or attach files
+                      with your message) and press <strong>Send</strong>. Item type, condition check, and suitability
+                      will show here.
+                    </p>
+                    <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-400">
+                      <Package className="w-3.5 h-3.5" />
+                      <span className="font-medium text-gray-600">Item (preview)</span>
+                    </div>
+                    <p className="text-xs font-medium text-[#000000] mt-1">{detectedItem}</p>
+                  </div>
+                  {sidebarMatchedAgents && sidebarMatchedAgents.length > 0 ? (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
+                        <span className="text-xs font-bold text-[#000000] uppercase tracking-wide">
+                          Matched donation agents
+                        </span>
+                      </div>
+                      <ul className="space-y-2">
+                        {sidebarMatchedAgents.map((r) => (
+                          <MatchedAgentSidebarRow key={r.ngoId} r={r} />
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <div className="rounded-xl border border-[#e5e5e5] bg-white p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-gray-500">Item</span>
+                      <span className="text-xs font-medium text-[#000000] text-right flex items-center gap-1">
+                        <Package className="w-3 h-3 flex-shrink-0" />
+                        {detectedItem}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-gray-500">Condition</span>
+                      {lastAnalysis.photoVerification && lastAnalysis.photoVerification !== 'passed' ? (
+                        <span className="text-xs font-medium text-amber-800 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50">
+                          —
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded-full border ${CONDITION_COLORS[lastAnalysis.condition!]}`}
+                        >
+                          {lastAnalysis.condition}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-gray-500">Suitability</span>
+                      {lastAnalysis.photoVerification && lastAnalysis.photoVerification !== 'passed' ? (
+                        <span className="text-xs font-medium text-amber-800 flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5" /> Resend photo
+                        </span>
+                      ) : lastAnalysis.suitable ? (
+                        <span className="text-xs font-medium text-green-700 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" /> Suitable
+                        </span>
+                      ) : (
+                        <span className="text-xs font-medium text-[#da1a32] flex items-center gap-1">
+                          <XCircle className="w-3.5 h-3.5" /> Not suitable
+                        </span>
+                      )}
+                    </div>
+                    {lastAnalysis.visibleSummary ? (
+                      <p className="text-[10px] text-gray-500 pt-1 border-t border-[#e5e5e5] leading-snug">
+                        AI saw: {lastAnalysis.visibleSummary}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  {stage === 'result_suitable' ? (
+                    <div>
+                      <span className="text-xs text-gray-500 uppercase tracking-wide">Suggested receivers</span>
+                      <ul className="mt-2 space-y-2">
+                        {displayReceivers.map((r) => (
+                          <li
+                            key={r.ngoId}
+                            className="flex items-center justify-between gap-2 rounded-lg border border-[#e5e5e5] bg-[#edf2f4]/40 px-3 py-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-[#000000] truncate">{r.name}</p>
+                              <p className="text-[10px] text-gray-500 truncate flex items-center gap-0.5">
+                                <MapPin className="w-3 h-3 flex-shrink-0" />
+                                {r.location}
+                              </p>
+                            </div>
+                            <span className="text-sm font-bold text-[#da1a32] flex-shrink-0">{r.allocation}%</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : sidebarMatchedAgents && sidebarMatchedAgents.length > 0 ? (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2 mt-1">
+                        <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
+                        <span className="text-xs font-bold text-[#000000] uppercase tracking-wide">
+                          Matched donation agents
+                        </span>
+                      </div>
+                      <ul className="space-y-2">
+                        {sidebarMatchedAgents.map((r) => (
+                          <MatchedAgentSidebarRow key={r.ngoId} r={r} mutedBg />
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </>
+              )}
+
+              {(pendingImage || pendingAttachFiles.length > 0) && (
+                <div>
+                  <span className="text-xs text-gray-500 uppercase tracking-wide">Queued (not sent)</span>
+                  <ul className="mt-1.5 space-y-1 text-xs text-amber-800">
+                    {pendingImage && <li>🖼 Photo — press Send in chat to analyze</li>}
+                    {pendingAttachFiles.map((f, i) => (
+                      <li key={`q-${f.name}-${i}`} className="truncate" title={f.name}>
+                        📎 {f.name}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {attachedFiles.length > 0 && (
+                <div>
+                  <span className="text-xs text-gray-500 uppercase tracking-wide">Attachments</span>
+                  <ul className="mt-1.5 space-y-1">
+                    {attachedFiles.map((f, i) => (
+                      <li key={`${f.name}-${i}`} className="text-xs text-gray-600 truncate" title={f.name}>
+                        📎 {f.name}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+        </aside>
+
+        {/* AI Chat — right */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0 order-1 lg:order-2">
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         {/* Chat Header */}
         <div className="flex items-center gap-3 px-5 py-4 bg-[#000000] flex-shrink-0">
           <div className="w-9 h-9 bg-[#da1a32] rounded-full flex items-center justify-center shadow">
@@ -453,38 +1007,66 @@ export function AIDonation() {
             // Bot message
             if (msg.type === 'analysis') {
               const cond = msg.condition!;
+              const pv = msg.photoVerification ?? 'passed';
+              const photoRejected = pv !== 'passed';
+              const headline = photoRejected
+                ? pv === 'wrong_item_for_category'
+                  ? 'Wrong item for your category'
+                  : 'Not a donation-item photo'
+                : 'AI photo screening';
               return (
                 <BotBubble key={msg.id}>
-                  <div className="bg-white border-2 border-[#e5e5e5] rounded-2xl rounded-tl-sm p-4 shadow-sm w-full min-w-[280px]">
+                  <div
+                    className={`rounded-2xl rounded-tl-sm p-4 shadow-sm w-full min-w-[280px] border-2 ${
+                      photoRejected ? 'bg-amber-50 border-amber-200' : 'bg-white border-[#e5e5e5]'
+                    }`}
+                  >
                     <div className="flex items-center gap-2 mb-3">
                       <Brain className="w-4 h-4 text-[#da1a32]" />
-                      <span className="text-sm font-medium text-[#000000]">AI Analysis Result</span>
+                      <span className="text-sm font-medium text-[#000000]">{headline}</span>
                     </div>
+                    {msg.visibleSummary ? (
+                      <p className="text-xs text-gray-600 mb-3 leading-relaxed">
+                        <span className="font-medium text-[#000000]">What we see: </span>
+                        {msg.visibleSummary}
+                      </p>
+                    ) : null}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">Item Detected</span>
-                        <span className="text-xs font-medium text-[#000000] flex items-center gap-1">
-                          <Package className="w-3 h-3" /> {detectedItem}
+                        <span className="text-xs text-gray-500">Declared donation</span>
+                        <span className="text-xs font-medium text-[#000000] flex items-center gap-1 text-right">
+                          <Package className="w-3 h-3 flex-shrink-0" /> {detectedItem}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">Condition</span>
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${CONDITION_COLORS[cond]}`}>
-                          {cond}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">Suitability</span>
-                        {msg.suitable ? (
-                          <span className="text-xs font-medium text-green-700 flex items-center gap-1">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Suitable for Donation
-                          </span>
-                        ) : (
-                          <span className="text-xs font-medium text-[#da1a32] flex items-center gap-1">
-                            <XCircle className="w-3.5 h-3.5" /> Not Suitable
-                          </span>
-                        )}
-                      </div>
+                      {!photoRejected ? (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">Condition</span>
+                            <span
+                              className={`text-xs font-medium px-2 py-0.5 rounded-full border ${CONDITION_COLORS[cond]}`}
+                            >
+                              {cond}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">Suitability</span>
+                            {msg.suitable ? (
+                              <span className="text-xs font-medium text-green-700 flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Suitable for donation
+                              </span>
+                            ) : (
+                              <span className="text-xs font-medium text-[#da1a32] flex items-center gap-1">
+                                <XCircle className="w-3.5 h-3.5" /> Not suitable (damaged)
+                              </span>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2 text-xs text-amber-950 leading-relaxed">
+                          This image does not pass screening. Please queue a new photo of your actual donation item and
+                          press <strong>Send</strong> again.
+                        </div>
+                      )}
                     </div>
                   </div>
                 </BotBubble>
@@ -493,8 +1075,25 @@ export function AIDonation() {
 
             return (
               <BotBubble key={msg.id}>
-                <div className="bg-white border border-[#e5e5e5] text-[#000000] px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm text-sm leading-relaxed whitespace-pre-line">
-                  {msg.text}
+                <div className="space-y-3">
+                  <div className="bg-white border border-[#e5e5e5] text-[#000000] px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm text-sm leading-relaxed whitespace-pre-line">
+                    {msg.text}
+                  </div>
+                  {msg.matchedAgents && msg.matchedAgents.length > 0 ? (
+                    <div className="bg-white border border-[#e5e5e5] rounded-2xl rounded-tl-sm shadow-sm p-3 text-sm">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
+                        <span className="font-semibold text-[#000000] text-xs uppercase tracking-wide">
+                          Matched donation agents
+                        </span>
+                      </div>
+                      <ul className="space-y-2">
+                        {msg.matchedAgents.map((r) => (
+                          <MatchedAgentChatCard key={`${msg.id}-${r.ngoId}`} r={r} />
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                 </div>
               </BotBubble>
             );
@@ -513,12 +1112,46 @@ export function AIDonation() {
 
         {/* Input Bar */}
         <div className="flex-shrink-0 px-4 py-3 bg-white border-t border-[#e5e5e5]">
+          {(pendingImage || pendingAttachFiles.length > 0) && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+              {pendingImage && (
+                <div className="inline-flex items-center gap-2 rounded-lg border border-[#da1a32] bg-red-50/40 px-2 py-1.5">
+                  <img src={pendingImage.preview} alt="" className="w-9 h-9 rounded object-cover border border-[#e5e5e5]" />
+                  <span className="text-[#000000] font-medium">Photo queued</span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingImage(null)}
+                    className="text-[#da1a32] hover:underline font-medium"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+              {pendingAttachFiles.length > 0 && (
+                <div className="inline-flex items-center gap-2 rounded-lg border border-[#e5e5e5] bg-[#edf2f4] px-2 py-1.5">
+                  <span className="text-gray-600">{pendingAttachFiles.length} file(s) queued</span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingAttachFiles([])}
+                    className="text-[#da1a32] hover:underline font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              <span className="text-gray-500">Press Send to submit to the assistant.</span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={stage === 'greeting' || stage === 'result_suitable' || stage === 'result_unsuitable'}
+              disabled={
+                stage === 'greeting' ||
+                stage === 'result_suitable' ||
+                stage === 'result_unsuitable'
+              }
               className="w-10 h-10 flex items-center justify-center rounded-xl border-2 border-[#e5e5e5] text-gray-400 hover:border-[#da1a32] hover:text-[#da1a32] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-              title="Upload item photo"
+              title="Choose item photo (Send to upload)"
             >
               <ImagePlus className="w-5 h-5" />
             </button>
@@ -527,13 +1160,13 @@ export function AIDonation() {
               type="file"
               accept="image/*"
               className="hidden"
-              onChange={handleImageUpload}
+              onChange={handleImagePick}
             />
             <button
               onClick={() => attachInputRef.current?.click()}
               disabled={stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing'}
               className="w-10 h-10 flex items-center justify-center rounded-xl border-2 border-[#e5e5e5] text-gray-400 hover:border-[#da1a32] hover:text-[#da1a32] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-              title="Attach files"
+              title="Attach files (Send to include in chat)"
             >
               <Paperclip className="w-5 h-5" />
             </button>
@@ -554,10 +1187,12 @@ export function AIDonation() {
                 isRecording
                   ? 'Listening...'
                   : stage === 'awaiting_image'
-                  ? 'Upload an image to continue...'
-                  : stage === 'result_suitable' || stage === 'result_unsuitable'
-                  ? 'Start a new chat to donate again'
-                  : 'Type your message...'
+                      ? pendingImage
+                        ? 'Optional caption… then press Send to analyze photo'
+                        : 'Ask a question, queue files/photo, then press Send…'
+                      : stage === 'result_suitable' || stage === 'result_unsuitable'
+                        ? 'Start a new chat to donate again'
+                        : 'Type your message… (files/photos need Send)'
               }
               disabled={stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording}
               className="flex-1 px-4 py-2.5 border-2 border-[#e5e5e5] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-gray-50 disabled:cursor-not-allowed"
@@ -575,15 +1210,25 @@ export function AIDonation() {
               {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
             <button
-              onClick={handleSend}
-              disabled={!inputText.trim() || stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing'}
+              onClick={() => void handleSend()}
+              disabled={
+                (!pendingImage && !inputText.trim() && pendingAttachFiles.length === 0) ||
+                stage === 'result_suitable' ||
+                stage === 'result_unsuitable' ||
+                stage === 'analyzing' ||
+                isTyping
+              }
               className="w-10 h-10 bg-[#da1a32] text-white rounded-xl flex items-center justify-center hover:bg-[#b01528] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 shadow-sm"
+              title="Send message, queued files, or queued photo"
             >
               <Send className="w-4 h-4" />
             </button>
           </div>
           {stage === 'awaiting_image' && !micPermissionError && !isRecording && (
-            <p className="text-xs text-[#da1a32] mt-1.5 ml-12">📸 Upload a photo of your item to continue</p>
+            <p className="text-xs text-[#da1a32] mt-1.5 ml-12">
+              📸 For <strong>physical items</strong>: pick a photo with the image button, optionally add a caption, then
+              press <strong>Send</strong> — nothing is uploaded until you send.
+            </p>
           )}
           {isRecording && (
             <p className="text-xs text-[#da1a32] mt-1.5 ml-12 animate-pulse">🎤 Listening... Speak now</p>
@@ -604,11 +1249,52 @@ export function AIDonation() {
             </div>
           )}
         </div>
+          </div>
+        </div>
       </div>
 
       {/* Allocation Results (shown below chat when suitable) */}
       {stage === 'result_suitable' && (
         <div className="mt-6 space-y-5">
+          {planLoading && (
+            <div className="flex items-center gap-2 text-sm text-gray-600 bg-[#edf2f4] border border-[#e5e5e5] rounded-xl px-4 py-3">
+              <Loader2 className="w-4 h-4 animate-spin text-[#da1a32]" />
+              Z.AI GLM is extracting intent, checking NGO demand, evaluating urgency, and splitting allocation…
+            </div>
+          )}
+
+          {glmPlan && (glmPlan.donorIntent || glmPlan.ngoDemandCheck || glmPlan.urgencyEvaluation) && (
+            <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 space-y-4 shadow-sm">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                <span className="font-semibold text-[#000000]">Structured plan</span>
+                <span className="rounded-full bg-[#edf2f4] px-2 py-0.5 border border-[#e5e5e5]">
+                  {glmPlan.source === 'glm' ? `Z.AI · ${glmPlan.model}` : 'Fallback engine'}
+                </span>
+              </div>
+              {glmPlan.donorIntent ? (
+                <div>
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Donor intent</h3>
+                  <p className="text-sm text-[#000000] leading-relaxed">{glmPlan.donorIntent}</p>
+                </div>
+              ) : null}
+              {glmPlan.ngoDemandCheck ? (
+                <div>
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">NGO demand check</h3>
+                  <p className="text-sm text-[#000000] leading-relaxed">{glmPlan.ngoDemandCheck}</p>
+                </div>
+              ) : null}
+              {glmPlan.urgencyEvaluation ? (
+                <div>
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Urgency evaluation</h3>
+                  <p className="text-sm text-[#000000] leading-relaxed">{glmPlan.urgencyEvaluation}</p>
+                </div>
+              ) : null}
+              {glmPlan.planSummary ? (
+                <p className="text-sm font-medium text-[#da1a32] border-t border-[#e5e5e5] pt-3">{glmPlan.planSummary}</p>
+              ) : null}
+            </div>
+          )}
+
           {/* Receiver Cards */}
           <div>
             <h2 className="text-xl font-bold text-[#000000] mb-4 flex items-center gap-2">
@@ -616,9 +1302,9 @@ export function AIDonation() {
               AI-Recommended Allocation
             </h2>
             <div className="space-y-4">
-              {suggestedReceivers.map((r, i) => (
+              {displayReceivers.map((r, i) => (
                 <div
-                  key={i}
+                  key={r.ngoId}
                   className={`bg-white rounded-2xl p-6 border-2 shadow-sm ${i === 0 ? 'border-[#da1a32]' : 'border-[#e5e5e5]'}`}
                 >
                   <div className="flex items-start justify-between mb-4">
@@ -667,10 +1353,43 @@ export function AIDonation() {
                         </li>
                       ))}
                     </ul>
+                    <VisualReasoningPanel r={r} />
                   </div>
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Impact preview before confirmation */}
+          <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <Scale className="w-4 h-4 text-[#da1a32]" />
+              <h3 className="text-sm font-bold text-[#000000]">See your impact before donating</h3>
+            </div>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wide">People helped</p>
+                <p className="text-xl font-bold text-[#da1a32]">
+                  ~{displayReceivers.reduce((s, r) => s + Math.max(1, Math.round(r.allocation / 10)), 0)}
+                </p>
+                <p className="text-[10px] text-gray-500">Illustrative estimate</p>
+              </div>
+              <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wide">NGOs supported</p>
+                <p className="text-xl font-bold text-[#000000]">{new Set(displayReceivers.map((r) => r.ngoId)).size}</p>
+                <p className="text-[10px] text-gray-500">Diversified allocation</p>
+              </div>
+              <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wide">Urgent cases resolved</p>
+                <p className="text-xl font-bold text-[#000000]">
+                  {displayReceivers.filter((r) => r.urgency === 'High').length}
+                </p>
+                <p className="text-[10px] text-gray-500">High-priority partners covered</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-600 mt-3 leading-relaxed">
+              Impact preview is based on current item-condition fit and allocation across matched NGOs.
+            </p>
           </div>
 
           {/* Confirm Button */}

@@ -1,9 +1,96 @@
 import Link from 'next/link';
+import { useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart } from 'lucide-react';
+import { getNgoById, type NgoDemandProfile } from '../../lib/ngos-demand-catalog';
+
+/** Needs list page still links with numeric ids for mock rows. */
+const LEGACY_LIST_ID_TO_NGO: Record<string, string> = {
+  '1': 'ngo_hope_orphanage',
+  '2': 'ngo_care_foundation',
+};
+
+function resolveNgoFromRouteParam(id: string | string[] | undefined): NgoDemandProfile {
+  const raw = (Array.isArray(id) ? id[0] : id) ?? '';
+  const decoded = raw ? decodeURIComponent(raw) : '';
+  const direct = decoded ? getNgoById(decoded) : undefined;
+  if (direct) return direct;
+  const legacy = decoded ? LEGACY_LIST_ID_TO_NGO[decoded] : undefined;
+  if (legacy) {
+    const n = getNgoById(legacy);
+    if (n) return n;
+  }
+  return getNgoById('ngo_hope_orphanage')!;
+}
+
+function categoryTitle(cat: string): string {
+  const map: Record<string, string> = {
+    food: 'Food & meals',
+    baby_supplies: 'Baby supplies',
+    clothing: 'Clothing',
+    school_supplies: 'School supplies',
+    hygiene: 'Hygiene kits',
+    medical_supplies: 'Medical supplies',
+    medical_consumables: 'Medical consumables',
+    blankets: 'Blankets & bedding',
+    books: 'Books & reading',
+    electronics_learning: 'STEM / learning materials',
+    elder_care: 'Elder care',
+  };
+  return map[cat] ?? cat.replace(/_/g, ' ');
+}
+
+function categoryDescription(cat: string): string {
+  const map: Record<string, string> = {
+    food: 'Pantry staples and meal support for households in the service area.',
+    baby_supplies: 'Formula, diapers, and infant essentials for enrolled families.',
+    clothing: 'Season-appropriate clothing for distribution to clients.',
+    school_supplies: 'Stationery, kits, and learning materials for students.',
+    hygiene: 'Soap, dental care, and personal hygiene packs.',
+    medical_supplies: 'Clinical consumables and first-aid style inventory.',
+    medical_consumables: 'Day-to-day medical consumables for care programs.',
+    blankets: 'Bedding and warmth items for shelter and outreach.',
+    books: 'Reading and curriculum support for library or classroom use.',
+    electronics_learning: 'Devices and kits that support digital learning.',
+    elder_care: 'Support items and consumables for senior programs.',
+  };
+  return map[cat] ?? 'Program inventory aligned with this organization’s published demand.';
+}
+
+function urgencyBadgeClasses(label: NgoDemandProfile['urgencyLabel']) {
+  if (label === 'High') {
+    return {
+      wrap: 'border-red-100 bg-red-50',
+      icon: 'text-red-600',
+      label: 'bg-red-100 text-red-600 border-red-200',
+      qty: 'text-red-600',
+      text: 'High Priority',
+    };
+  }
+  if (label === 'Low') {
+    return {
+      wrap: 'border-green-100 bg-green-50',
+      icon: 'text-green-600',
+      label: 'bg-green-100 text-green-600 border-green-200',
+      qty: 'text-green-600',
+      text: 'Lower Priority',
+    };
+  }
+  return {
+    wrap: 'border-yellow-100 bg-yellow-50',
+    icon: 'text-yellow-600',
+    label: 'bg-yellow-100 text-yellow-600 border-yellow-200',
+    qty: 'text-yellow-600',
+    text: 'Medium Priority',
+  };
+}
 
 export function ReceiverDetail() {
   const { id } = useParams();
+
+  const ngo = useMemo(() => resolveNgoFromRouteParam(id), [id]);
+
+  const demoEmail = `info@${ngo.id.replace(/^ngo_/, '').replace(/_/g, '')}.org`;
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -19,10 +106,10 @@ export function ReceiverDetail() {
                 <Building2 className="w-8 h-8 text-white" />
               </div>
               <div>
-                <h1 className="text-3xl mb-2 text-[#000000] font-bold">Hope Orphanage</h1>
+                <h1 className="text-3xl mb-2 text-[#000000] font-bold">{ngo.name}</h1>
                 <div className="flex items-center gap-2 text-gray-600">
                   <MapPin className="w-4 h-4" />
-                  Kuala Lumpur • 2.5 km away
+                  {ngo.location}
                 </div>
               </div>
             </div>
@@ -30,9 +117,8 @@ export function ReceiverDetail() {
             <div className="bg-[#edf2f4] border-2 border-[#e5e5e5] rounded-xl p-4 mb-6">
               <h3 className="font-medium mb-2 text-[#000000]">About Organization</h3>
               <p className="text-sm text-gray-600">
-                Hope Orphanage is a registered non-profit organization dedicated to providing care,
-                education, and support to underprivileged children in Kuala Lumpur. We currently
-                house 80 children aged 3-17 and provide them with shelter, food, education, and healthcare.
+                {ngo.name} is a partner organization on the DonateAI demand catalog. Current signal from the field:{' '}
+                {ngo.currentGap}
               </p>
             </div>
 
@@ -48,7 +134,7 @@ export function ReceiverDetail() {
                 <Mail className="w-5 h-5 text-[#da1a32]" />
                 <div>
                   <div className="text-sm text-gray-600">Contact Email</div>
-                  <div className="font-medium text-[#000000]">contact@hopeorphanage.org</div>
+                  <div className="font-medium text-[#000000]">{demoEmail}</div>
                 </div>
               </div>
             </div>
@@ -57,44 +143,35 @@ export function ReceiverDetail() {
           <div className="bg-white rounded-2xl p-6 border-2 border-[#e5e5e5] shadow-sm">
             <h2 className="text-xl mb-4 text-[#000000] font-bold">Current Needs</h2>
             <div className="space-y-4">
-              <div className="p-4 border-2 border-red-100 bg-red-50 rounded-xl">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-start gap-3">
-                    <Package className="w-6 h-6 text-red-600 mt-1" />
-                    <div>
-                      <h3 className="font-medium text-lg text-[#000000]">Food Packs</h3>
-                      <p className="text-sm text-gray-600">Essential food supplies for daily meals</p>
+              {ngo.demandCategories.map((cat, index) => {
+                const rowUrgency: NgoDemandProfile['urgencyLabel'] =
+                  index === 0 ? ngo.urgencyLabel : ngo.urgencyLabel === 'High' ? 'Medium' : 'Low';
+                const c = urgencyBadgeClasses(rowUrgency);
+                const units = Math.max(10, ngo.needLevel * 15 - index * 5);
+                return (
+                  <div key={cat} className={`p-4 border-2 rounded-xl ${c.wrap}`}>
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-start gap-3">
+                        <Package className={`w-6 h-6 mt-1 ${c.icon}`} />
+                        <div>
+                          <h3 className="font-medium text-lg text-[#000000]">{categoryTitle(cat)}</h3>
+                          <p className="text-sm text-gray-600">{categoryDescription(cat)}</p>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-3 py-1 text-xs rounded-full border flex items-center gap-1 font-medium ${c.label}`}
+                      >
+                        {rowUrgency === 'High' ? <AlertCircle className="w-3 h-3" /> : null}
+                        {c.text}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className={`text-2xl font-bold ${c.qty}`}>{units} units needed</div>
+                      <div className="text-sm text-gray-600">From catalog need level {ngo.needLevel}/5</div>
                     </div>
                   </div>
-                  <span className="px-3 py-1 bg-red-100 text-red-600 text-xs rounded-full border border-red-200 flex items-center gap-1 font-medium">
-                    <AlertCircle className="w-3 h-3" />
-                    High Priority
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="text-2xl text-red-600 font-bold">100 units needed</div>
-                  <div className="text-sm text-gray-600">Requested 2 days ago</div>
-                </div>
-              </div>
-
-              <div className="p-4 border-2 border-yellow-100 bg-yellow-50 rounded-xl">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-start gap-3">
-                    <Package className="w-6 h-6 text-yellow-600 mt-1" />
-                    <div>
-                      <h3 className="font-medium text-lg text-[#000000]">School Supplies</h3>
-                      <p className="text-sm text-gray-600">Books, stationery, and learning materials</p>
-                    </div>
-                  </div>
-                  <span className="px-3 py-1 bg-yellow-100 text-yellow-600 text-xs rounded-full border border-yellow-200 font-medium">
-                    Medium Priority
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="text-2xl text-yellow-600 font-bold">50 units needed</div>
-                  <div className="text-sm text-gray-600">Requested 1 week ago</div>
-                </div>
-              </div>
+                );
+              })}
             </div>
           </div>
 
@@ -103,8 +180,8 @@ export function ReceiverDetail() {
             <div className="bg-gradient-to-br from-[#edf2f4] to-[#e5e5e5] rounded-xl h-64 flex items-center justify-center border-2 border-[#e5e5e5]">
               <div className="text-center text-gray-600">
                 <MapPin className="w-12 h-12 mx-auto mb-2 text-[#da1a32]" />
-                <p className="text-[#000000] font-medium">Map showing Hope Orphanage</p>
-                <p className="text-sm">No. 123, Jalan Bukit Bintang, Kuala Lumpur</p>
+                <p className="text-[#000000] font-medium">Map showing {ngo.name}</p>
+                <p className="text-sm">{ngo.location}</p>
               </div>
             </div>
           </div>
@@ -114,17 +191,13 @@ export function ReceiverDetail() {
           <div className="bg-gradient-to-br from-[#da1a32] to-[#b01528] rounded-2xl p-6 text-white sticky top-24 shadow-lg">
             <Heart className="w-12 h-12 mb-4" fill="white" />
             <h3 className="text-xl mb-3 font-bold">Support This Organization</h3>
-            <p className="text-white opacity-80 text-sm mb-6">
-              Your donation will directly help 80 children in need
-            </p>
+            <p className="text-white opacity-80 text-sm mb-6">{ngo.currentGap}</p>
             <Link href="/donor/donate">
               <button className="w-full bg-white text-[#da1a32] py-3 rounded-xl hover:bg-[#edf2f4] transition-all mb-3 shadow-sm font-medium">
                 Donate Now
               </button>
             </Link>
-            <div className="text-center text-sm text-white opacity-80">
-              Or browse other organizations
-            </div>
+            <div className="text-center text-sm text-white opacity-80">Or browse other organizations</div>
           </div>
         </div>
       </div>
