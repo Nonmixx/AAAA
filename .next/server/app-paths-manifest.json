@@ -1,8 +1,0 @@
-{
-  "/receiver/page": "app/receiver/page.js",
-  "/receiver/profile/page": "app/receiver/profile/page.js",
-  "/receiver/create-needs/page": "app/receiver/create-needs/page.js",
-  "/receiver/incoming/page": "app/receiver/incoming/page.js",
-  "/(auth)/login/page": "app/(auth)/login/page.js",
-  "/(auth)/receiver-verification/page": "app/(auth)/receiver-verification/page.js"
-}

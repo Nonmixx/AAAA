@@ -35,22 +35,6 @@ export function DonorLayout({ children }: { children: React.ReactNode }) {
               <div className="text-2xl font-bold">DonateAI</div>
             </Link>
 
-            {/* Navigation Links */}
-            <div className="hidden md:flex items-center gap-6">
-              <Link
-                href="/"
-                className={`hover:text-[#da1a32] transition-colors ${pathname === '/' ? 'text-[#da1a32]' : 'text-white'}`}
-              >
-                Home
-              </Link>
-              <Link
-                href="/needs"
-                className={`hover:text-[#da1a32] transition-colors ${pathname === '/needs' ? 'text-[#da1a32]' : 'text-white'}`}
-              >
-                View Needs
-              </Link>
-            </div>
-
             {/* Login Button */}
             <div className="flex items-center gap-4">
               <Link href="/login">
