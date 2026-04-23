@@ -11,7 +11,7 @@ const ReceiverDetail = dynamic(
 export default function PublicOrganizationDetailPage() {
   return (
     <DonorLayout>
-      <ReceiverDetail />
+      <ReceiverDetail backHref="/needs" donateHref="/login" />
     </DonorLayout>
   );
 }

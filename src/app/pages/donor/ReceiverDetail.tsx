@@ -1,3 +1,5 @@
+'use client';
+
 import Link from 'next/link';
 import { useMemo } from 'react';
 import { useParams } from 'next/navigation';
@@ -85,7 +87,12 @@ function urgencyBadgeClasses(label: NgoDemandProfile['urgencyLabel']) {
   };
 }
 
-export function ReceiverDetail() {
+type ReceiverDetailProps = {
+  backHref?: string;
+  donateHref?: string;
+};
+
+export function ReceiverDetail({ backHref = '/donor/needs', donateHref = '/donor/donate' }: ReceiverDetailProps) {
   const { id } = useParams();
 
   const ngo = useMemo(() => resolveNgoFromRouteParam(id), [id]);
@@ -94,7 +101,7 @@ export function ReceiverDetail() {
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <Link href="/donor/needs" className="text-[#da1a32] hover:text-[#b01528] mb-6 inline-block font-medium">
+      <Link href={backHref} className="text-[#da1a32] hover:text-[#b01528] mb-6 inline-block font-medium">
         ← Back to Needs List
       </Link>
 
@@ -192,7 +199,7 @@ export function ReceiverDetail() {
             <Heart className="w-12 h-12 mb-4" fill="white" />
             <h3 className="text-xl mb-3 font-bold">Support This Organization</h3>
             <p className="text-white opacity-80 text-sm mb-6">{ngo.currentGap}</p>
-            <Link href="/donor/donate">
+            <Link href={donateHref}>
               <button className="w-full bg-white text-[#da1a32] py-3 rounded-xl hover:bg-[#edf2f4] transition-all mb-3 shadow-sm font-medium">
                 Donate Now
               </button>

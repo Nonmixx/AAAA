@@ -1,3 +1,5 @@
+'use client';
+
 import Link from 'next/link';
 import { Building2, MapPin, Package, AlertCircle, Zap } from 'lucide-react';
 import { useDonorContext } from '../../context/DonorContext';
@@ -59,7 +61,17 @@ const urgencyColors: Record<string, string> = {
   low: 'bg-green-50 text-green-600 border-green-100',
 };
 
-export function ReceiverNeedsList() {
+type ReceiverNeedsListProps = {
+  detailBasePath?: string;
+  showBackButton?: boolean;
+  backHref?: string;
+};
+
+export function ReceiverNeedsList({
+  detailBasePath = '/donor/needs',
+  showBackButton = false,
+  backHref = '/donor',
+}: ReceiverNeedsListProps) {
   const { emergencyMode } = useDonorContext();
 
   const sortedReceivers = emergencyMode
@@ -68,6 +80,16 @@ export function ReceiverNeedsList() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {showBackButton && (
+        <div className="mb-4">
+          <Link href={backHref}>
+            <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
+              Back
+            </button>
+          </Link>
+        </div>
+      )}
+
       <div className="mb-8">
         <h1 className="text-3xl mb-2 text-[#000000] font-bold">Organizations in Need</h1>
         <p className="text-gray-600">Browse and support organizations that need your help</p>
@@ -102,7 +124,7 @@ export function ReceiverNeedsList() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         {sortedReceivers.map((receiver) => (
-          <Link key={receiver.id} href={`/donor/needs/${receiver.id}`}>
+          <Link key={receiver.id} href={`${detailBasePath}/${receiver.id}`}>
             <div
               className={`bg-white rounded-2xl p-6 border-2 shadow-sm hover:shadow-md hover:border-[#da1a32] transition-all cursor-pointer ${
                 emergencyMode && receiver.emergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'

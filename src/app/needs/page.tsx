@@ -1,10 +1,10 @@
 import { DonorLayout } from '../components/layouts/DonorLayout';
-import { ViewNeeds } from '../pages/public/ViewNeeds';
+import { ReceiverNeedsList } from '../pages/donor/ReceiverNeedsList';
 
 export default function NeedsPage() {
   return (
     <DonorLayout>
-      <ViewNeeds />
+      <ReceiverNeedsList detailBasePath="/needs" showBackButton backHref="/donor" />
     </DonorLayout>
   );
 }

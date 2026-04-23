@@ -271,7 +271,7 @@ export default function DonorHomePage() {
               <h2 className="text-4xl font-bold text-[#000000] mb-2">Urgent Needs</h2>
               <p className="text-xl text-gray-600">High-priority requests that need immediate support</p>
             </div>
-            <Link href="/donor/needs">
+            <Link href="/needs">
               <button className="px-6 py-3 bg-[#da1a32] text-white rounded-lg hover:bg-[#b01528] hover:scale-[1.02] transition-all duration-200 font-medium shadow-lg">
                 View All
               </button>
@@ -279,7 +279,7 @@ export default function DonorHomePage() {
           </div>
           <div className="grid md:grid-cols-3 gap-6">
             {featuredNeeds.map((need) => (
-              <Link key={need.id} href={`/donor/needs/${need.id}`}>
+              <Link key={need.id} href={`/needs/${need.id}`}>
                 <div className="bg-white rounded-xl overflow-hidden shadow-lg hover:shadow-2xl hover:-translate-y-1 transition-all duration-200 cursor-pointer">
                   <div className="relative h-48">
                     <img src={need.image} alt={need.need} className="w-full h-full object-cover" />
