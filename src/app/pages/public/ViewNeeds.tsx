@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { MapPin, Heart, Filter, Search, Building2, ImageIcon } from 'lucide-react';
+import { MapPin, Heart, Filter, Search, Building2, ImageIcon, AlertCircle, Zap } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import {
   getNeedDisplayImage,
@@ -10,11 +10,15 @@ import {
   getOrganizationInitials,
   type NeedMediaSource,
 } from '@/lib/media';
+import { compareNeedPriority, getRemainingQuantity, type NeedUrgency } from '@/lib/needPriority';
 
 type NeedOrganization = {
+  id?: string;
   name: string;
   address: string | null;
   logo_url: string | null;
+  is_emergency: boolean | null;
+  emergency_reason: string | null;
   verification_status: 'pending' | 'approved' | 'rejected' | null;
 };
 
@@ -26,7 +30,8 @@ type NeedRecord = {
   image_url: string | null;
   quantity_requested: number;
   quantity_fulfilled: number;
-  urgency: 'low' | 'medium' | 'high';
+  urgency: NeedUrgency;
+  is_emergency: boolean | null;
   organizations: NeedOrganization | NeedOrganization[] | null;
 };
 
@@ -44,6 +49,43 @@ function getMediaBadgeLabel(source: NeedMediaSource) {
   if (source === 'need-image') return 'Need photo';
   if (source === 'organization-logo') return 'Organization logo';
   return 'Placeholder';
+}
+
+function getEffectiveUrgency(need: NeedRecord): NeedUrgency {
+  const organization = getOrganizationRecord(need.organizations);
+  if (need.is_emergency || organization?.is_emergency) return 'high';
+  return need.urgency;
+}
+
+function isUrgentNeed(need: NeedRecord) {
+  return getEffectiveUrgency(need) === 'high';
+}
+
+const urgencyColors: Record<NeedUrgency, string> = {
+  high: 'bg-red-50 text-red-600 border-red-100',
+  medium: 'bg-yellow-50 text-yellow-600 border-yellow-100',
+  low: 'bg-green-50 text-green-600 border-green-100',
+};
+
+function getVerificationBadge(status: NeedOrganization['verification_status']) {
+  if (status === 'approved') {
+    return {
+      label: 'Approved',
+      className: 'bg-green-50 text-green-700 border-green-100',
+    };
+  }
+
+  if (status === 'rejected') {
+    return {
+      label: 'Rejected',
+      className: 'bg-gray-50 text-gray-600 border-gray-200',
+    };
+  }
+
+  return {
+    label: 'Pending Verification',
+    className: 'bg-yellow-50 text-yellow-700 border-yellow-100',
+  };
 }
 
 function NeedCardVisual({
@@ -95,18 +137,12 @@ export function ViewNeeds() {
         const supabase = getSupabaseBrowserClient();
         const { data, error } = await supabase
           .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(name, address, logo_url, verification_status)')
+          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, is_emergency, organizations(id, name, address, logo_url, is_emergency, emergency_reason, verification_status)')
           .eq('status', 'active')
           .order('created_at', { ascending: false });
 
         if (error) throw error;
-
-        const approvedNeeds = ((data ?? []) as NeedRecord[]).filter((need) => {
-          const organization = getOrganizationRecord(need.organizations);
-          return organization?.verification_status === 'approved';
-        });
-
-        setNeeds(approvedNeeds);
+        setNeeds((data ?? []) as NeedRecord[]);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load public needs.');
       } finally {
@@ -120,6 +156,8 @@ export function ViewNeeds() {
   const filteredNeeds = useMemo(() => {
     return needs.filter((need) => {
       const organization = getOrganizationRecord(need.organizations);
+      if (!organization) return false;
+
       const haystack = [
         need.title,
         need.description,
@@ -129,9 +167,24 @@ export function ViewNeeds() {
       ].join(' ').toLowerCase();
 
       const matchesSearch = searchQuery.trim() === '' || haystack.includes(searchQuery.toLowerCase());
-      const matchesUrgency = urgencyFilter === 'all' || need.urgency === urgencyFilter;
+      const matchesUrgency = urgencyFilter === 'all' || getEffectiveUrgency(need) === urgencyFilter;
       return matchesSearch && matchesUrgency;
-    });
+    }).sort((a, b) =>
+      compareNeedPriority(
+        {
+          isEmergency: a.is_emergency || getOrganizationRecord(a.organizations)?.is_emergency,
+          urgency: getEffectiveUrgency(a),
+          quantityRequested: a.quantity_requested,
+          quantityFulfilled: a.quantity_fulfilled,
+        },
+        {
+          isEmergency: b.is_emergency || getOrganizationRecord(b.organizations)?.is_emergency,
+          urgency: getEffectiveUrgency(b),
+          quantityRequested: b.quantity_requested,
+          quantityFulfilled: b.quantity_fulfilled,
+        }
+      )
+    );
   }, [needs, searchQuery, urgencyFilter]);
 
   return (
@@ -143,11 +196,11 @@ export function ViewNeeds() {
               Active Needs <span className="text-[#da1a32]">Now</span>
             </h1>
             <p className="mb-8 text-xl text-white/80">
-              Verified organizations requesting support, with smart image fallback built in
+              Live receiver requests from Supabase, with smart image fallback built in
             </p>
             <div className="flex items-center justify-center gap-4 text-[#edf2f4]">
               <Heart className="h-5 w-5 text-[#da1a32]" />
-              <span>Need photo, organization logo, or a clear branded placeholder</span>
+              <span>Need photo, organization logo, or a clear branded placeholder with live verification labels</span>
             </div>
           </div>
         </div>
@@ -193,7 +246,7 @@ export function ViewNeeds() {
               {loading ? 'Loading needs...' : `${filteredNeeds.length} Active Needs`}
             </h2>
             <p className="text-gray-600">
-              Browse current needs from verified organizations
+              Browse current needs from all receiver organizations in Supabase
             </p>
           </div>
 
@@ -212,7 +265,6 @@ export function ViewNeeds() {
           <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3">
             {filteredNeeds.map((need) => {
               const organization = getOrganizationRecord(need.organizations);
-              if (!organization) return null;
 
               const mediaSource = getNeedMediaSource(need.image_url, organization.logo_url);
               const imageUrl = getNeedDisplayImage(need.image_url, organization.logo_url);
@@ -220,11 +272,16 @@ export function ViewNeeds() {
               const progress = need.quantity_requested === 0
                 ? 0
                 : Math.round((quantityMatched / need.quantity_requested) * 100);
+              const remainingQuantity = getRemainingQuantity(need.quantity_requested, need.quantity_fulfilled);
+              const emergencyReason = organization.emergency_reason?.trim();
+              const urgent = isUrgentNeed(need);
 
               return (
                 <div
                   key={need.id}
-                  className="overflow-hidden rounded-lg border-2 border-[#e5e5e5] bg-white transition-all hover:border-[#da1a32] hover:shadow-xl"
+                  className={`overflow-hidden rounded-lg border-2 bg-white transition-all hover:border-[#da1a32] hover:shadow-xl ${
+                    organization.is_emergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'
+                  }`}
                 >
                   <div className="relative">
                     <NeedCardVisual
@@ -233,9 +290,9 @@ export function ViewNeeds() {
                       organizationName={organization.name}
                       category={need.category}
                     />
-                    {need.urgency === 'high' && (
+                    {urgent && (
                       <div className="absolute right-4 top-4 rounded-full bg-[#da1a32] px-3 py-1 text-sm font-medium text-white">
-                        URGENT
+                        {need.is_emergency || organization.is_emergency ? 'EMERGENCY' : 'URGENT'}
                       </div>
                     )}
                     <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-white/90 px-3 py-1 text-xs font-medium text-[#000000] shadow-sm">
@@ -245,15 +302,43 @@ export function ViewNeeds() {
                   </div>
 
                   <div className="p-6">
-                    <h3 className="mb-2 text-xl font-bold text-[#000000]">{need.title}</h3>
-                    <div className="mb-4 flex items-center gap-2 text-sm text-gray-600">
-                      <MapPin className="h-4 w-4" />
-                      {organization.name} - {getLocationLabel(organization.address)}
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <h3 className="text-xl font-bold text-[#000000]">{need.title}</h3>
+                          {(() => {
+                            const verificationBadge = getVerificationBadge(organization.verification_status);
+                            return (
+                              <span className={`px-2 py-0.5 text-xs rounded-full border font-medium ${verificationBadge.className}`}>
+                                {verificationBadge.label}
+                              </span>
+                            );
+                          })()}
+                          {organization.is_emergency && (
+                            <span className="flex items-center gap-1 rounded-full bg-[#da1a32] px-2 py-0.5 text-xs font-medium text-white">
+                              <Zap className="h-3 w-3" /> Emergency
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-gray-600">
+                          <MapPin className="h-4 w-4" />
+                          {organization.name} - {getLocationLabel(organization.address)}
+                        </div>
+                      </div>
+                      <span className={`px-3 py-1 text-xs rounded-full border whitespace-nowrap ${urgencyColors[getEffectiveUrgency(need)]}`}>
+                        {getEffectiveUrgency(need) === 'high' && <AlertCircle className="mr-1 inline h-3 w-3" />}
+                        {getEffectiveUrgency(need).charAt(0).toUpperCase() + getEffectiveUrgency(need).slice(1)}
+                      </span>
                     </div>
 
                     <p className="mb-2 line-clamp-2 text-sm text-gray-600">
                       {need.description}
                     </p>
+                    {(organization.is_emergency || need.is_emergency) && emergencyReason && (
+                      <p className="mb-2 line-clamp-2 text-sm font-medium text-[#da1a32]">
+                        {emergencyReason}
+                      </p>
+                    )}
                     <p className="mb-4 text-xs font-medium uppercase tracking-wide text-gray-500">
                       {need.category}
                     </p>
@@ -273,6 +358,9 @@ export function ViewNeeds() {
                       </div>
                       <div className="mt-1 text-xs text-gray-500">
                         {progress}% fulfilled
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {remainingQuantity} still needed
                       </div>
                     </div>
 

@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { Heart, Package, Sparkles, TrendingUp, Users, Zap, Shield } from 'lucide-react';
 import { DonorLayout } from '../components/layouts/DonorLayout';
-import { fetchPublicBrowseReceivers } from '@/lib/publicNeeds';
+import { fetchPublicActiveNeeds } from '@/lib/publicNeeds';
 import styles from './page.module.css';
 import { UrgentNeedsSection, type UrgentNeedCard } from './UrgentNeedsSection';
 
@@ -139,27 +139,25 @@ const liveNotifications = [
 ];
 
 export default async function DonorHomePage() {
-  const liveReceivers = await fetchPublicBrowseReceivers();
-  const featuredNeeds = liveReceivers.length > 0
-    ? liveReceivers.slice(0, 3).map((receiver, index) => {
-        const topItem = receiver.items[0];
-        const requested = Math.max(topItem?.quantity ?? 0, 1);
-        const matched = 0;
+  const liveNeeds = await fetchPublicActiveNeeds();
+  const featuredNeeds = liveNeeds.length > 0
+    ? liveNeeds.slice(0, 3).map((need, index) => {
+        const requested = Math.max(need.quantity_requested, 1);
         return {
-          id: receiver.id,
-          organization: receiver.name,
-          location: receiver.location,
-          latitude: receiver.latitude,
-          longitude: receiver.longitude,
+          id: need.id,
+          organization: need.organization.name,
+          location: need.organization.location_name?.trim() || need.organization.address?.split(',')[0]?.trim() || 'Location on file',
+          latitude: need.organization.latitude,
+          longitude: need.organization.longitude,
           image:
-            topItem?.imageUrl ||
+            need.image_url ||
             fallbackFeaturedNeeds[index % fallbackFeaturedNeeds.length]?.image ||
             'https://images.unsplash.com/photo-1608979827489-2b855e79debe?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1080',
-          need: topItem?.item ?? 'Essential Supplies',
+          need: need.title,
           quantity: requested,
-          matched,
-          urgency: receiver.emergency ? 'high' : ((topItem?.urgency as 'high' | 'medium' | 'low') ?? 'medium'),
-        };
+          matched: Math.max(0, need.quantity_fulfilled),
+          urgency: need.is_emergency || need.organization.is_emergency ? 'high' : need.urgency,
+        } satisfies UrgentNeedCard;
       })
     : fallbackFeaturedNeeds;
 
