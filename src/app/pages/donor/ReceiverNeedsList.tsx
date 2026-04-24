@@ -3,8 +3,7 @@
 import Link from 'next/link';
 import { Building2, MapPin, Package, AlertCircle, Zap, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Building2, MapPin, Package, AlertCircle, Zap, ImageIcon } from 'lucide-react';
-import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { usePathname } from 'next/navigation';
 import { useDonorContext } from '../../context/DonorContext';
 import type { PublicBrowseReceiver } from '@/lib/publicNeeds';
 import { DEFAULT_NEED_IMAGE, getContextualDefaultNeedImage } from '@/lib/media';
@@ -15,13 +14,13 @@ const urgencyColors: Record<string, string> = {
   low: 'bg-green-50 text-green-600 border-green-100',
 };
 
-function getVerificationBadge(status: NeedOrganization['verification_status']) {
-  if (status === 'approved') {
-    return {
-      label: 'Approved',
-      className: 'bg-green-50 text-green-700 border-green-100',
-    };
-  }
+type ReceiverNeedsListProps = {
+  detailBasePath?: string;
+  showBackButton?: boolean;
+  backHref?: string;
+  /** Live rows from Supabase; merged ahead of demo data when present. */
+  liveReceivers?: PublicBrowseReceiver[];
+};
 
 function ImageCarousel({
   images,
@@ -84,114 +83,97 @@ export function ReceiverNeedsList({
 }: ReceiverNeedsListProps) {
   const pathname = usePathname();
   const { emergencyMode } = useDonorContext();
-  const [needs, setNeeds] = useState<NeedRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState('all');
-  const [urgencyFilter, setUrgencyFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
 
   useEffect(() => {
-    const loadNeeds = async () => {
-      setLoading(true);
-      setErrorMessage(null);
-
-      try {
-        const supabase = getSupabaseBrowserClient();
-        const { data, error } = await supabase
-          .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(id, name, address, logo_url, verification_status, is_emergency, emergency_reason)')
-          .eq('status', 'active')
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        setNeeds((data ?? []) as NeedRecord[]);
-      } catch (err) {
-        setErrorMessage(err instanceof Error ? err.message : 'Unable to load receiver needs.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void loadNeeds();
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      () => {
+        setUserLocation(null);
+      },
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+    );
   }, []);
 
-  const categories = useMemo(() => {
-    return [...new Set(needs.map((need) => need.category).filter(Boolean))];
-  }, [needs]);
+  const distanceKm = (aLat: number, aLng: number, bLat: number, bLng: number) => {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const earthKm = 6371;
+    const dLat = toRad(bLat - aLat);
+    const dLng = toRad(bLng - aLng);
+    const x =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    return earthKm * c;
+  };
 
-  const filteredNeeds = useMemo(() => {
-    const next = needs.filter((need) => {
-      const matchesCategory = categoryFilter === 'all' || need.category === categoryFilter;
-      const matchesUrgency = urgencyFilter === 'all' || need.urgency === urgencyFilter;
-      return matchesCategory && matchesUrgency;
-    });
+  const distanceLabel = (receiver: { latitude?: number | null; longitude?: number | null }) => {
+    if (!userLocation || receiver.latitude == null || receiver.longitude == null) return 'Nearby';
+    const km = distanceKm(userLocation.latitude, userLocation.longitude, receiver.latitude, receiver.longitude);
+    return `${km.toFixed(1)} km`;
+  };
 
-    if (!emergencyMode) return next;
+  // Guard against merge regressions: keep public /needs flow on public routes.
+  const isPublicNeedsRoute = pathname?.startsWith('/needs');
+  const resolvedDetailBasePath = isPublicNeedsRoute ? '/needs' : detailBasePath;
+  const resolvedShowBackButton = isPublicNeedsRoute ? true : showBackButton;
+  const resolvedBackHref = isPublicNeedsRoute ? '/donor' : backHref;
 
   const mergedReceivers = useMemo(() => liveReceivers, [liveReceivers]);
 
-      const urgencyRank: Record<NeedRecord['urgency'], number> = { high: 3, medium: 2, low: 1 };
-      return urgencyRank[b.urgency] - urgencyRank[a.urgency];
-    });
-  }, [categoryFilter, emergencyMode, needs, urgencyFilter]);
+  const sortedReceivers = emergencyMode
+    ? [...mergedReceivers].sort((a, b) => (b.emergency ? 1 : 0) - (a.emergency ? 1 : 0))
+    : mergedReceivers;
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {resolvedShowBackButton && (
+        <div className="mb-4">
+          <Link href={resolvedBackHref}>
+            <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
+              Back
+            </button>
+          </Link>
+        </div>
+      )}
+
       <div className="mb-8">
         <h1 className="text-3xl mb-2 text-[#000000] font-bold">Organizations in Need</h1>
-        <p className="text-gray-600">Browse live receiver needs from Supabase</p>
+        <p className="text-gray-600">Browse and support organizations that need your help</p>
       </div>
 
+      {/* Emergency Mode Banner */}
       {emergencyMode && (
         <div className="mb-6 bg-[#da1a32] text-white px-5 py-4 rounded-2xl flex items-start gap-3 shadow-lg">
           <Zap className="w-5 h-5 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="font-bold text-sm">Emergency Mode Active - Urgent requests are prioritised</p>
-            <p className="text-xs text-white opacity-80 mt-0.5">Emergency-tagged organizations appear at the top based on current receiver data.</p>
+            <p className="font-bold text-sm">Emergency Mode Active — Urgent requests are prioritised</p>
+            <p className="text-xs text-white opacity-80 mt-0.5">Emergency-tagged organisations appear at the top. AI allocation will prioritise them first.</p>
           </div>
         </div>
       )}
 
-      {errorMessage && (
-        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {errorMessage}
-        </div>
-      )}
-
       <div className="mb-6 flex gap-4 flex-wrap">
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="px-4 py-2 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] bg-white text-[#000000]"
-        >
-          <option value="all">All Categories</option>
-          {categories.map((category) => (
-            <option key={category} value={category}>{category}</option>
-          ))}
+        <select className="px-4 py-2 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] bg-white text-[#000000]">
+          <option>All Categories</option>
+          <option>Food &amp; Supplies</option>
+          <option>Medical</option>
+          <option>Clothing</option>
+          <option>Education</option>
         </select>
-        <select
-          value={urgencyFilter}
-          onChange={(e) => setUrgencyFilter(e.target.value as 'all' | 'high' | 'medium' | 'low')}
-          className="px-4 py-2 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] bg-white text-[#000000]"
-        >
-          <option value="all">All Urgency Levels</option>
-          <option value="high">High Priority</option>
-          <option value="medium">Medium Priority</option>
-          <option value="low">Low Priority</option>
+        <select className="px-4 py-2 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] bg-white text-[#000000]">
+          <option>All Urgency Levels</option>
+          <option>High Priority</option>
+          <option>Medium Priority</option>
+          <option>Low Priority</option>
         </select>
       </div>
-
-      {loading && (
-        <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4] px-4 py-8 text-center text-sm text-gray-600">
-          Loading receiver needs...
-        </div>
-      )}
-
-      {!loading && filteredNeeds.length === 0 && (
-        <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4] px-4 py-8 text-center text-sm text-gray-600">
-          No active receiver needs matched your filters.
-        </div>
-      )}
 
       <div className="grid lg:grid-cols-2 gap-6">
         {sortedReceivers.length === 0 ? (
@@ -248,55 +230,45 @@ export function ReceiverNeedsList({
                         <span className="flex items-center gap-1 px-2 py-0.5 bg-[#da1a32] text-white text-xs rounded-full font-medium">
                           <Zap className="w-3 h-3" /> Emergency
                         </span>
-                        {emergencyMode && isEmergency && (
-                          <span className="flex items-center gap-1 px-2 py-0.5 bg-[#da1a32] text-white text-xs rounded-full font-medium">
-                            <Zap className="w-3 h-3" /> Emergency
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-gray-600">
-                        <MapPin className="w-4 h-4" />
-                        {organization.name} - {getLocationLabel(organization.address)}
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <MapPin className="w-4 h-4" />
+                      {receiver.location} • {distanceLabel(receiver)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Emergency reason banner */}
+              {emergencyMode && receiver.emergency && (
+                <div className="mb-3 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded-xl text-xs text-[#da1a32] font-medium">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  {receiver.emergencyReason}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {receiver.items.map((item, index) => (
+                  <div key={index} className="flex items-center justify-between p-3 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
+                    <div className="flex items-center gap-3">
+                      <Package className="w-5 h-5 text-[#000000]" />
+                      <div>
+                        <div className="font-medium text-[#000000]">{item.item}</div>
+                        <div className="text-sm text-gray-600">{item.quantity} units needed</div>
                       </div>
                     </div>
-                    <span className={`px-3 py-1 text-xs rounded-full border whitespace-nowrap ${urgencyColors[need.urgency]}`}>
-                      {need.urgency === 'high' && <AlertCircle className="w-3 h-3 inline mr-1" />}
-                      {need.urgency.charAt(0).toUpperCase() + need.urgency.slice(1)}
+                    <span className={`px-3 py-1 text-xs rounded-full border ${urgencyColors[item.urgency]}`}>
+                      {item.urgency === 'high' && <AlertCircle className="w-3 h-3 inline mr-1" />}
+                      {item.urgency.charAt(0).toUpperCase() + item.urgency.slice(1)}
                     </span>
                   </div>
+                ))}
+              </div>
 
-                  {emergencyMode && isEmergency && organization.emergency_reason && (
-                    <div className="mb-3 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded-xl text-xs text-[#da1a32] font-medium">
-                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                      {organization.emergency_reason}
-                    </div>
-                  )}
-
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between p-3 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
-                      <div className="flex items-center gap-3">
-                        <Package className="w-5 h-5 text-[#000000]" />
-                        <div>
-                          <div className="font-medium text-[#000000]">{need.category}</div>
-                          <div className="text-sm text-gray-600">{need.quantity_requested} units requested</div>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm font-medium text-[#000000]">{quantityRemaining} remaining</div>
-                        <div className="text-xs text-gray-500">{need.quantity_fulfilled} fulfilled</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="mt-4 line-clamp-3 text-sm text-gray-600">
-                    {need.description}
-                  </p>
-
-                  <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
-                    <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium">
-                      View Details ->
-                    </div>
-                  </div>
+              <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
+                <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium text-right">
+                  View Details
                 </div>
               </div>
             </div>

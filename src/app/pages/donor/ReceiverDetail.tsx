@@ -1,44 +1,77 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useParams } from 'next/navigation';
-import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart, ImageIcon } from 'lucide-react';
-import { getSupabaseBrowserClient } from '@/lib/supabase/client';
-import { getNeedDisplayImage, getNeedMediaSource, getOrganizationInitials } from '@/lib/media';
+import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart } from 'lucide-react';
+import { getNgoById, type NgoDemandProfile } from '../../lib/ngos-demand-catalog';
 
-type OrganizationRecord = {
-  id: string;
-  name: string;
-  address: string | null;
-  description: string | null;
-  contact_email: string | null;
-  contact_phone: string | null;
-  logo_url: string | null;
-  verification_status: 'pending' | 'approved' | 'rejected' | null;
-  is_emergency: boolean | null;
-  emergency_reason: string | null;
+/** Needs list page still links with numeric ids for mock rows. */
+const LEGACY_LIST_ID_TO_NGO: Record<string, string> = {
+  '1': 'ngo_hope_orphanage',
+  '2': 'ngo_care_foundation',
+  '3': 'ngo_pages_library',
+  '4': 'ngo_urban_shelter',
 };
 
-type NeedRecord = {
-  id: string;
-  title: string;
-  description: string;
-  category: string;
-  image_url: string | null;
-  quantity_requested: number;
-  quantity_fulfilled: number;
-  urgency: 'low' | 'medium' | 'high';
-  organizations: OrganizationRecord | OrganizationRecord[] | null;
+const NGO_COORDINATES: Record<string, { lat: number; lng: number }> = {
+  ngo_hope_orphanage: { lat: 3.139, lng: 101.6869 },
+  ngo_care_foundation: { lat: 3.1073, lng: 101.6067 },
+  ngo_green_pantry: { lat: 3.0738, lng: 101.5183 },
+  ngo_pages_library: { lat: 3.043, lng: 101.581 },
+  ngo_river_clinic: { lat: 3.0449, lng: 101.4456 },
+  ngo_urban_shelter: { lat: 3.1357, lng: 101.688 },
 };
 
-function getOrganizationRecord(organization: NeedRecord['organizations']) {
-  if (Array.isArray(organization)) return organization[0] ?? null;
-  return organization;
+function resolveNgoFromRouteParam(id: string | string[] | undefined): NgoDemandProfile {
+  const raw = (Array.isArray(id) ? id[0] : id) ?? '';
+  const decoded = raw ? decodeURIComponent(raw) : '';
+  const direct = decoded ? getNgoById(decoded) : undefined;
+  if (direct) return direct;
+  const legacy = decoded ? LEGACY_LIST_ID_TO_NGO[decoded] : undefined;
+  if (legacy) {
+    const n = getNgoById(legacy);
+    if (n) return n;
+  }
+  return getNgoById('ngo_hope_orphanage')!;
 }
 
-function urgencyBadgeClasses(urgency: NeedRecord['urgency']) {
-  if (urgency === 'high') {
+function categoryTitle(cat: string): string {
+  const map: Record<string, string> = {
+    food: 'Food & meals',
+    baby_supplies: 'Baby supplies',
+    clothing: 'Clothing',
+    school_supplies: 'School supplies',
+    hygiene: 'Hygiene kits',
+    medical_supplies: 'Medical supplies',
+    medical_consumables: 'Medical consumables',
+    blankets: 'Blankets & bedding',
+    books: 'Books & reading',
+    electronics_learning: 'STEM / learning materials',
+    elder_care: 'Elder care',
+  };
+  return map[cat] ?? cat.replace(/_/g, ' ');
+}
+
+function categoryDescription(cat: string): string {
+  const map: Record<string, string> = {
+    food: 'Pantry staples and meal support for households in the service area.',
+    baby_supplies: 'Formula, diapers, and infant essentials for enrolled families.',
+    clothing: 'Season-appropriate clothing for distribution to clients.',
+    school_supplies: 'Stationery, kits, and learning materials for students.',
+    hygiene: 'Soap, dental care, and personal hygiene packs.',
+    medical_supplies: 'Clinical consumables and first-aid style inventory.',
+    medical_consumables: 'Day-to-day medical consumables for care programs.',
+    blankets: 'Bedding and warmth items for shelter and outreach.',
+    books: 'Reading and curriculum support for library or classroom use.',
+    electronics_learning: 'Devices and kits that support digital learning.',
+    elder_care: 'Support items and consumables for senior programs.',
+  };
+  return map[cat] ?? 'Program inventory aligned with this organization’s published demand.';
+}
+
+function urgencyBadgeClasses(label: NgoDemandProfile['urgencyLabel']) {
+  if (label === 'High') {
     return {
       wrap: 'border-red-100 bg-red-50',
       icon: 'text-red-600',
@@ -47,7 +80,7 @@ function urgencyBadgeClasses(urgency: NeedRecord['urgency']) {
       text: 'High Priority',
     };
   }
-  if (urgency === 'low') {
+  if (label === 'Low') {
     return {
       wrap: 'border-green-100 bg-green-50',
       icon: 'text-green-600',
@@ -65,169 +98,45 @@ function urgencyBadgeClasses(urgency: NeedRecord['urgency']) {
   };
 }
 
-function getVerificationBadge(status: OrganizationRecord['verification_status']) {
-  if (status === 'approved') {
-    return {
-      label: 'Approved',
-      className: 'bg-green-50 text-green-700 border-green-100',
-    };
-  }
+type ReceiverDetailProps = {
+  backHref?: string;
+  donateHref?: string;
+};
 
-  if (status === 'rejected') {
-    return {
-      label: 'Rejected',
-      className: 'bg-gray-50 text-gray-600 border-gray-200',
-    };
-  }
-
-  return {
-    label: 'Pending Verification',
-    className: 'bg-yellow-50 text-yellow-700 border-yellow-100',
-  };
-}
-
-export function ReceiverDetail() {
+export function ReceiverDetail({ backHref = '/donor/needs', donateHref = '/donor/donate' }: ReceiverDetailProps) {
   const { id } = useParams();
-  const needId = Array.isArray(id) ? id[0] : id;
-  const [need, setNeed] = useState<NeedRecord | null>(null);
-  const [organizationNeeds, setOrganizationNeeds] = useState<NeedRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    const loadNeedDetails = async () => {
-      if (!needId) return;
+  const ngo = useMemo(() => resolveNgoFromRouteParam(id), [id]);
+  const mapQuery = encodeURIComponent(ngo.location.replace(/•.*$/, '').trim());
+  const mapPoint = NGO_COORDINATES[ngo.id];
+  const mapSrc = mapPoint
+    ? `https://www.openstreetmap.org/export/embed.html?bbox=${mapPoint.lng - 0.03},${mapPoint.lat - 0.02},${mapPoint.lng + 0.03},${mapPoint.lat + 0.02}&layer=mapnik&marker=${mapPoint.lat},${mapPoint.lng}`
+    : `https://www.google.com/maps?q=${mapQuery}&output=embed`;
 
-      setLoading(true);
-      setErrorMessage(null);
-
-      try {
-        const supabase = getSupabaseBrowserClient();
-        const { data, error } = await supabase
-          .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(id, name, address, description, contact_email, contact_phone, logo_url, verification_status, is_emergency, emergency_reason)')
-          .eq('id', needId)
-          .maybeSingle();
-
-        if (error) throw error;
-
-        const needRecord = (data ?? null) as NeedRecord | null;
-        const organization = getOrganizationRecord(needRecord?.organizations ?? null);
-        if (!needRecord || !organization) {
-          setErrorMessage('Need not found.');
-          return;
-        }
-
-        setNeed(needRecord);
-
-        const { data: siblingNeeds, error: siblingNeedsError } = await supabase
-          .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(id, name, address, description, contact_email, contact_phone, logo_url, verification_status, is_emergency, emergency_reason)')
-          .eq('organization_id', organization.id)
-          .eq('status', 'active')
-          .order('created_at', { ascending: false });
-
-        if (siblingNeedsError) throw siblingNeedsError;
-        setOrganizationNeeds((siblingNeeds ?? []) as NeedRecord[]);
-      } catch (err) {
-        setErrorMessage(err instanceof Error ? err.message : 'Unable to load need details.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    void loadNeedDetails();
-  }, [needId]);
-
-  const organization = useMemo(() => getOrganizationRecord(need?.organizations ?? null), [need]);
-  const currentVisualUrl = useMemo(() => {
-    if (!need || !organization) return null;
-    return getNeedDisplayImage(need.image_url, organization.logo_url);
-  }, [need, organization]);
-  const currentVisualSource = useMemo(() => {
-    if (!need || !organization) return 'placeholder';
-    return getNeedMediaSource(need.image_url, organization.logo_url);
-  }, [need, organization]);
-  const verificationBadge = useMemo(
-    () => (organization ? getVerificationBadge(organization.verification_status) : null),
-    [organization],
-  );
-
-  if (loading) {
-    return (
-      <div className="p-6 max-w-6xl mx-auto">
-        <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-8 text-center text-sm text-gray-500 shadow-sm">
-          Loading need details...
-        </div>
-      </div>
-    );
-  }
-
-  if (errorMessage || !need || !organization) {
-    return (
-      <div className="p-6 max-w-6xl mx-auto">
-        <Link href="/donor/needs" className="text-[#da1a32] hover:text-[#b01528] mb-6 inline-block font-medium">
-          &larr; Back to Needs List
-        </Link>
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">
-          {errorMessage ?? 'Need not found.'}
-        </div>
-      </div>
-    );
-  }
+  const demoEmail = `info@${ngo.id.replace(/^ngo_/, '').replace(/_/g, '')}.org`;
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <Link href="/donor/needs" className="text-[#da1a32] hover:text-[#b01528] mb-6 inline-block font-medium">
-        &larr; Back to Needs List
-      </Link>
+      <div className="mb-4">
+        <Link href={backHref}>
+          <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
+            Back
+          </button>
+        </Link>
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
-            <div className="relative mb-6 overflow-hidden rounded-2xl border border-[#e5e5e5]">
-              {currentVisualUrl ? (
-                <img src={currentVisualUrl} alt={need.title} className="h-64 w-full object-cover" />
-              ) : (
-                <div className="flex h-64 w-full items-center justify-center bg-[linear-gradient(135deg,#111111_0%,#2a2a2a_45%,#da1a32_100%)] px-6 text-white">
-                  <div className="text-center">
-                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-white/20 bg-white/10 text-xl font-bold">
-                      {getOrganizationInitials(organization.name)}
-                    </div>
-                    <div className="mt-4 text-lg font-semibold">{organization.name}</div>
-                  </div>
-                </div>
-              )}
-              <div className="absolute left-4 top-4 rounded-full bg-white/90 px-3 py-1 text-xs font-medium text-[#000000] shadow-sm">
-                {currentVisualSource === 'organization-logo' ? (
-                  <span className="inline-flex items-center gap-2"><Building2 className="h-3.5 w-3.5" /> Organization logo</span>
-                ) : currentVisualSource === 'need-image' ? (
-                  <span className="inline-flex items-center gap-2"><ImageIcon className="h-3.5 w-3.5" /> Need photo</span>
-                ) : (
-                  'Placeholder'
-                )}
-              </div>
-            </div>
-
             <div className="flex items-start gap-4 mb-6">
               <div className="w-16 h-16 bg-[#da1a32] rounded-2xl flex items-center justify-center flex-shrink-0 shadow-sm">
                 <Building2 className="w-8 h-8 text-white" />
               </div>
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-3xl mb-2 text-[#000000] font-bold">{need.title}</h1>
-                  {verificationBadge && (
-                    <span className={`rounded-full border px-3 py-1 text-xs font-medium ${verificationBadge.className}`}>
-                      {verificationBadge.label}
-                    </span>
-                  )}
-                  {organization.is_emergency && (
-                    <span className="rounded-full bg-[#da1a32] px-3 py-1 text-xs font-medium text-white">Emergency</span>
-                  )}
-                </div>
+                <h1 className="text-3xl mb-2 text-[#000000] font-bold">{ngo.name}</h1>
                 <div className="flex items-center gap-2 text-gray-600">
                   <MapPin className="w-4 h-4" />
-                  {organization.name} - {organization.address ?? 'Location pending'}
+                  {ngo.location}
                 </div>
               </div>
             </div>
@@ -235,30 +144,24 @@ export function ReceiverDetail() {
             <div className="bg-[#edf2f4] border-2 border-[#e5e5e5] rounded-xl p-4 mb-6">
               <h3 className="font-medium mb-2 text-[#000000]">About Organization</h3>
               <p className="text-sm text-gray-600">
-                {organization.description || `${organization.name} is currently requesting support through DonateAI.`}
+                {ngo.name} is a partner organization on the DonateAI demand catalog. Current signal from the field:{' '}
+                {ngo.currentGap}
               </p>
             </div>
-
-            {organization.is_emergency && organization.emergency_reason && (
-              <div className="mb-6 flex items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-[#da1a32]">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                {organization.emergency_reason}
-              </div>
-            )}
 
             <div className="space-y-3">
               <div className="flex items-center gap-3 p-3 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
                 <Phone className="w-5 h-5 text-[#da1a32]" />
                 <div>
                   <div className="text-sm text-gray-600">Contact Phone</div>
-                  <div className="font-medium text-[#000000]">{organization.contact_phone || 'Not provided'}</div>
+                  <div className="font-medium text-[#000000]">+60 3-1234 5678</div>
                 </div>
               </div>
               <div className="flex items-center gap-3 p-3 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
                 <Mail className="w-5 h-5 text-[#da1a32]" />
                 <div>
                   <div className="text-sm text-gray-600">Contact Email</div>
-                  <div className="font-medium text-[#000000]">{organization.contact_email || 'Not provided'}</div>
+                  <div className="font-medium text-[#000000]">{demoEmail}</div>
                 </div>
               </div>
             </div>
@@ -267,33 +170,48 @@ export function ReceiverDetail() {
           <div className="bg-white rounded-2xl p-6 border-2 border-[#e5e5e5] shadow-sm">
             <h2 className="text-xl mb-4 text-[#000000] font-bold">Current Needs</h2>
             <div className="space-y-4">
-              {organizationNeeds.map((row) => {
-                const c = urgencyBadgeClasses(row.urgency);
-                const remaining = Math.max(0, row.quantity_requested - row.quantity_fulfilled);
+              {ngo.demandCategories.map((cat, index) => {
+                const rowUrgency: NgoDemandProfile['urgencyLabel'] =
+                  index === 0 ? ngo.urgencyLabel : ngo.urgencyLabel === 'High' ? 'Medium' : 'Low';
+                const c = urgencyBadgeClasses(rowUrgency);
+                const units = Math.max(10, ngo.needLevel * 15 - index * 5);
                 return (
-                  <div key={row.id} className={`p-4 border-2 rounded-xl ${c.wrap}`}>
-                    <div className="flex items-start justify-between mb-3 gap-3">
+                  <div key={cat} className={`p-4 border-2 rounded-xl ${c.wrap}`}>
+                    <div className="flex items-start justify-between mb-3">
                       <div className="flex items-start gap-3">
                         <Package className={`w-6 h-6 mt-1 ${c.icon}`} />
                         <div>
-                          <h3 className="font-medium text-lg text-[#000000]">{row.title}</h3>
-                          <p className="text-sm text-gray-600">{row.description}</p>
+                          <h3 className="font-medium text-lg text-[#000000]">{categoryTitle(cat)}</h3>
+                          <p className="text-sm text-gray-600">{categoryDescription(cat)}</p>
                         </div>
                       </div>
-                      <span className={`px-3 py-1 text-xs rounded-full border flex items-center gap-1 font-medium ${c.label}`}>
-                        {row.urgency === 'high' ? <AlertCircle className="w-3 h-3" /> : null}
+                      <span
+                        className={`px-3 py-1 text-xs rounded-full border flex items-center gap-1 font-medium ${c.label}`}
+                      >
+                        {rowUrgency === 'High' ? <AlertCircle className="w-3 h-3" /> : null}
                         {c.text}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <div className={`text-2xl font-bold ${c.qty}`}>{remaining} units remaining</div>
-                      <div className="text-sm text-gray-600">
-                        {row.quantity_fulfilled}/{row.quantity_requested} fulfilled
-                      </div>
+                      <div className={`text-2xl font-bold ${c.qty}`}>{units} units needed</div>
+                      <div className="text-sm text-gray-600">From catalog need level {ngo.needLevel}/5</div>
                     </div>
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-6 border-2 border-[#e5e5e5] shadow-sm">
+            <h2 className="text-xl mb-4 text-[#000000] font-bold">Location Map</h2>
+            <div className="rounded-xl h-64 overflow-hidden border-2 border-[#e5e5e5]">
+              <iframe
+                title={`Map showing ${ngo.name}`}
+                src={mapSrc}
+                className="w-full h-full border-0"
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
             </div>
           </div>
         </div>
@@ -301,13 +219,9 @@ export function ReceiverDetail() {
         <div className="lg:col-span-1">
           <div className="bg-gradient-to-br from-[#da1a32] to-[#b01528] rounded-2xl p-6 text-white sticky top-24 shadow-lg">
             <Heart className="w-12 h-12 mb-4" fill="white" />
-            <h3 className="text-xl mb-3 font-bold">Support This Need</h3>
-            <p className="text-white opacity-80 text-sm mb-6">
-              {organization.is_emergency && organization.emergency_reason
-                ? organization.emergency_reason
-                : `${need.title} currently needs ${Math.max(0, need.quantity_requested - need.quantity_fulfilled)} more units.`}
-            </p>
-            <Link href="/donor/donate">
+            <h3 className="text-xl mb-3 font-bold">Support This Organization</h3>
+            <p className="text-white opacity-80 text-sm mb-6">{ngo.currentGap}</p>
+            <Link href={donateHref}>
               <button className="w-full bg-white text-[#da1a32] py-3 rounded-xl hover:bg-[#edf2f4] transition-all mb-3 shadow-sm font-medium">
                 Donate Now
               </button>
