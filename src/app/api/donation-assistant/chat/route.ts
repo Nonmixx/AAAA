@@ -2,9 +2,22 @@ import { NextResponse } from 'next/server';
 import { NGO_DEMAND_CATALOG } from '../../../lib/ngos-demand-catalog';
 import { getTopMatchedReceivers } from '../../../lib/match-donation-ngos';
 import type { PlanReceiver } from '../../../lib/donation-plan-types';
-
-const DEFAULT_BASE = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_MODEL = 'glm-4-flash';
+import {
+  buildChatStageResponseContract,
+  buildDonateAiIntakePolicySection,
+  buildWorkflowOrchestrationPromptSection,
+} from '../../../lib/donation-assistant-workflow';
+import {
+  buildDonationWorkflowSnapshot,
+  workflowOrchestrationPromptBlock,
+} from '../../../lib/donation-workflow-engine';
+import {
+  getAnthropicModel,
+  getGlmModel,
+  getZaiApiKey,
+  getZaiCandidateBases,
+  isAnthropicCompatibleBase,
+} from '../../../lib/zai-env';
 
 type ApiMsg = { role: 'user' | 'assistant'; content: string };
 
@@ -13,6 +26,8 @@ interface ChatBody {
   stage: string;
   detectedItem: string;
   userLatest?: string;
+  /** Client keeps one id per assistant session so workflow stays traceable across turns. */
+  donationFlowId?: string | null;
 }
 
 function lastUserContent(messages: ApiMsg[]): string {
@@ -41,6 +56,14 @@ function appendMatchedAgentsHint(reply: string, agents: PlanReceiver[]): string 
   return `${reply}\n\n**Matched donation agents:** ${a.name} (${a.percent}%) · ${b.name} (${b.percent}%) — suggested item-donation routing for this demo catalog.`;
 }
 
+/** Avoid duplicating the top NGO when `details` fallback already inlined it. */
+function withFallbackAgentsFooter(stage: string, reply: string, agents: PlanReceiver[]): string {
+  // Keep photo-upload turns clean and step-by-step; do not append NGO block yet.
+  if (stage === 'awaiting_image') return reply;
+  if (stage === 'details' && agents[0]) return reply;
+  return appendMatchedAgentsHint(reply, agents);
+}
+
 function jsonSafeMatchedAgents(agents: PlanReceiver[]) {
   return agents.map((r) => ({
     name: r.name,
@@ -53,17 +76,25 @@ function jsonSafeMatchedAgents(agents: PlanReceiver[]) {
   }));
 }
 
-function fallbackReply(stage: string, detectedItem: string): string {
+function firstSentenceFromReasons(reason?: string[]): string {
+  const t = reason?.find((s) => s?.trim())?.trim();
+  return t || 'aligned with current catalog demand signals for this category.';
+}
+
+function fallbackReply(stage: string, detectedItem: string, agents: PlanReceiver[], userLatest: string): string {
   const ngos = NGO_DEMAND_CATALOG.map((n) => n.name).join(', ');
+  const transportNote =
+    "\n\n(And don't worry about transport! You can **drop items off yourself** at a verified partner, or we can use our **Corporate Logistics Wallet** or **Community Crowdfunding Board** to fund a driver to pick up from you — **you never pay** for Lalamove, Grab, or other paid couriers.)";
 
   if (stage === 'greeting') {
     return `Hi! I can help you donate **physical items** and match them to NGO demand. Tell me what items you want to donate (e.g. clothing, food packs, books), and your area. Partners include: ${ngos}.`;
   }
   if (stage === 'details') {
-    return `Thanks — I’ve noted your donation focus as “${detectedItem}”.\n\nTo proceed with item donation, please share:\n• Rough quantity or number of boxes\n• Pickup or drop-off area\n• Timing constraints\n\nWhen ready, upload a clear item photo and press **Send** (nothing is uploaded until Send).`;
+    const label = detectedItem?.trim() || 'your items';
+    return `Great — I noted **${label}**.\n\nNext step: please upload **one clear photo** of the items and press **Send** so I can run condition + suitability screening.${transportNote}`;
   }
   if (stage === 'awaiting_image') {
-    return `I’m ready to screen **item condition** once I have a photo.\n\n1) Tap the image button and select one clear photo.\n2) Add an optional caption.\n3) Press **Send** to run analysis.\n\nNeed guidance? I can suggest suitable NGOs after screening.`;
+    return 'Please upload one clear photo of the donation item, then press Send.';
   }
   return 'How can I help with your item donation next?';
 }
@@ -79,7 +110,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'messages[] and stage required' }, { status: 400 });
   }
 
-  const apiKey = process.env.ZAI_API_KEY?.trim() || process.env.BIGMODEL_API_KEY?.trim();
+  const apiKey = getZaiApiKey();
   const detectedItem = typeof body.detectedItem === 'string' ? body.detectedItem : 'Unknown item';
   const userLatest =
     typeof body.userLatest === 'string' && body.userLatest.trim()
@@ -88,19 +119,32 @@ export async function POST(req: Request) {
 
   const matchTranscript = chatContextTranscript(body.messages, userLatest, detectedItem);
   const matchedAgents = getTopMatchedReceivers(matchTranscript, detectedItem, undefined, userLatest);
+  const workflow = buildDonationWorkflowSnapshot({
+    stage: body.stage,
+    userLatest,
+    detectedItem,
+    matchedAgents,
+    existingFlowId: typeof body.donationFlowId === 'string' ? body.donationFlowId : null,
+  });
 
   if (!apiKey) {
-    const reply = appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents);
+    const reply = withFallbackAgentsFooter(
+      body.stage,
+      fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+      matchedAgents,
+    );
     return NextResponse.json({
       reply,
       matchedAgents,
+      workflow,
       source: 'fallback',
+      sourceReason: 'missing_api_key',
     });
   }
 
-  const base = (process.env.ZAI_API_BASE || DEFAULT_BASE).replace(/\/$/, '');
-  const model = process.env.GLM_MODEL?.trim() || DEFAULT_MODEL;
-  const url = `${base}/chat/completions`;
+  const model = getGlmModel();
+  const anthropicModel = getAnthropicModel();
+  const baseCandidates = getZaiCandidateBases();
 
   const catalogBrief = NGO_DEMAND_CATALOG.map(
     (n) => `- ${n.name} (${n.id}): ${n.demandCategories.join(', ')}; urgency ${n.urgencyLabel}; ${n.currentGap}`,
@@ -108,15 +152,23 @@ export async function POST(req: Request) {
 
   const matchedJson = JSON.stringify(jsonSafeMatchedAgents(matchedAgents), null, 0);
 
-  const system = `You are **DonateAI Assistant** for **physical item donations only** (no money/pledge flow).
+  const system = `${buildWorkflowOrchestrationPromptSection('chat', body.stage)}
+
+${workflowOrchestrationPromptBlock(workflow)}
+
+${buildDonateAiIntakePolicySection()}
+
+${buildChatStageResponseContract(body.stage, detectedItem)}
+
+You are **DonateAI Assistant** for **physical item donations only** (no money/pledge flow).
 
 ## Core behavior
-- Understand donor intent for **items** (what item, condition expectation, quantity, area, timing).
-- Guide donor through item workflow: clarify details -> ask for photo when needed -> explain matched NGOs.
+- Understand donor intent for **items** across the **four intake fields** (category / quantity / condition / location) and the **transport rules** in the Intake Assistant block.
+- Guide donor through item workflow: clarify details → photo when needed → explain matched NGOs.
 - Do not discuss cash/monetary/e-wallet paths.
 
 ## Item-donation guidance
-- If user intent is vague, ask 1-2 short clarifying questions about item type + quantity + location.
+- If user intent is vague, ask friendly follow-ups only for **missing** fields; keep questions readable (short bullets or lines).
 - Keep guidance practical and concise.
 - Mention that photos are submitted only after user presses Send.
 
@@ -129,60 +181,142 @@ MATCHED_DONATION_AGENTS_JSON:
 ${matchedJson}
 
 ## Accuracy
-- Do not invent pickup guarantees, tax receipts, or unavailable services.
+- Do not invent pickup times, tax receipts, or unavailable services.
 - NGO facts must come only from this catalog:
 ${catalogBrief}
 
 ## Style
-- Under ~220 words unless user asks for detail.
-- Plain text, short paragraphs or bullets.
+- Under ~260 words on a rich first intake turn; shorter on follow-ups.
+- Plain text, short paragraphs or bullets (light emoji is OK when it improves scanability).
+- Align transport language with \`delivery_options\` in workflow JSON (three rails only; donor never pays couriers).
 
 STAGE=${body.stage}
 DETECTED_ITEM_CATEGORY=${detectedItem}
-LATEST_USER_MESSAGE=${userLatest}`;
+LATEST_USER_MESSAGE=${userLatest}
+WORKFLOW_FLOW_ID=${workflow.flow_id}`;
 
   const recentMessages = body.messages.slice(-20);
 
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.4,
-        messages: [{ role: 'system', content: system }, ...recentMessages],
-      }),
-    });
+    let res: Response | null = null;
+    let lastReason = 'glm_unreachable';
+    for (const base of baseCandidates) {
+      const anthropic = isAnthropicCompatibleBase(base);
+      const url = anthropic ? `${base}/v1/messages` : `${base}/chat/completions`;
+      const headerCandidates = anthropic
+        ? [
+            {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+            {
+              Authorization: `Bearer ${apiKey}`,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+          ]
+        : [
+            { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            { 'api-key': apiKey, 'Content-Type': 'application/json' },
+          ];
+      for (const headers of headerCandidates) {
+        const payload = anthropic
+          ? {
+              model: anthropicModel,
+              max_tokens: 700,
+              temperature: 0.4,
+              system,
+              messages: recentMessages.map((m) => ({
+                role: m.role === 'assistant' ? 'assistant' : 'user',
+                content: m.content,
+              })),
+            }
+          : {
+              model,
+              temperature: 0.4,
+              messages: [{ role: 'system', content: system }, ...recentMessages],
+            };
+        const candidate = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        if (candidate.ok) {
+          res = candidate;
+          break;
+        }
+        lastReason = `glm_http_${candidate.status}_${base.replace(/^https?:\/\//, '')}`;
+        if (candidate.status !== 401 && candidate.status !== 404) {
+          res = candidate;
+          break;
+        }
+      }
+      if (res) break;
+    }
+    if (!res) {
+      return NextResponse.json({
+        reply: withFallbackAgentsFooter(
+          body.stage,
+          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+          matchedAgents,
+        ),
+        matchedAgents,
+        workflow,
+        source: 'fallback',
+        sourceReason: lastReason,
+      });
+    }
 
     if (!res.ok) {
       const t = await res.text().catch(() => '');
       console.error('GLM chat error', res.status, t);
       return NextResponse.json({
-        reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents),
+        reply: withFallbackAgentsFooter(
+          body.stage,
+          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+          matchedAgents,
+        ),
         matchedAgents,
+        workflow,
         source: 'fallback',
+        sourceReason: lastReason,
       });
     }
 
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const reply = data.choices?.[0]?.message?.content?.trim();
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+      content?: { type?: string; text?: string }[];
+    };
+    const reply =
+      data.choices?.[0]?.message?.content?.trim() ||
+      data.content?.find((c) => c.type === 'text')?.text?.trim();
     if (!reply) {
       return NextResponse.json({
-        reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents),
+        reply: withFallbackAgentsFooter(
+          body.stage,
+          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+          matchedAgents,
+        ),
         matchedAgents,
+        workflow,
         source: 'fallback',
+        sourceReason: 'empty_glm_reply',
       });
     }
-    return NextResponse.json({ reply, matchedAgents, source: 'glm' });
+    return NextResponse.json({ reply, matchedAgents, workflow, source: 'glm' });
   } catch (e) {
     console.error('donation-assistant/chat', e);
     return NextResponse.json({
-      reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents),
+      reply: withFallbackAgentsFooter(
+        body.stage,
+        fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+        matchedAgents,
+      ),
       matchedAgents,
+      workflow,
       source: 'fallback',
+      sourceReason: 'network_or_runtime_error',
     });
   }
 }

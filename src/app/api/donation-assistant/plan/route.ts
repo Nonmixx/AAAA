@@ -10,9 +10,14 @@ import { NextResponse } from 'next/server';
 import { NGO_DEMAND_CATALOG, getNgoById } from '../../../lib/ngos-demand-catalog';
 import { getTopMatchedReceivers } from '../../../lib/match-donation-ngos';
 import type { DonationPlanPayload, PlanReceiver, PlanRequestBody } from '../../../lib/donation-plan-types';
-
-const DEFAULT_BASE = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_MODEL = 'glm-4-flash';
+import { buildWorkflowOrchestrationPromptSection } from '../../../lib/donation-assistant-workflow';
+import {
+  getAnthropicModel,
+  getGlmModel,
+  getZaiApiKey,
+  getZaiCandidateBases,
+  isAnthropicCompatibleBase,
+} from '../../../lib/zai-env';
 
 function extractJsonObject(text: string): unknown {
   const trimmed = text.trim();
@@ -130,19 +135,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'transcript, detectedItem, and condition are required' }, { status: 400 });
   }
 
-  const apiKey = process.env.ZAI_API_KEY?.trim() || process.env.BIGMODEL_API_KEY?.trim();
+  const apiKey = getZaiApiKey();
   if (!apiKey) {
     const fallback = buildFallbackPlan(body);
     return NextResponse.json(fallback);
   }
 
-  const base = (process.env.ZAI_API_BASE || DEFAULT_BASE).replace(/\/$/, '');
-  const model = process.env.GLM_MODEL?.trim() || DEFAULT_MODEL;
-  const url = `${base}/chat/completions`;
+  const model = getGlmModel();
+  const anthropicModel = getAnthropicModel();
+  const baseCandidates = getZaiCandidateBases();
 
   const catalogJson = JSON.stringify(NGO_DEMAND_CATALOG, null, 2);
 
-  const system = `You are DonateAI's allocation engine using Z.AI GLM. You must:
+  const system = `${buildWorkflowOrchestrationPromptSection('plan')}
+
+You are DonateAI's allocation engine using Z.AI GLM. You must:
 1) Infer donor intent from the transcript and item.
 2) Cross-check each NGO in the catalog ONLY (by id) — describe demand fit honestly.
 3) Evaluate relative urgency using needLevel, urgencyLabel, and currentGap.
@@ -166,21 +173,61 @@ Rules: Use only ngoId values present in the provided catalog. Percents must be i
   const user = `CATALOG_JSON:\n${catalogJson}\n\nDONATION_ITEM: ${body.detectedItem}\nCONDITION: ${body.condition}\n\nCHAT_TRANSCRIPT:\n${body.transcript}`;
 
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.35,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-    });
+    let res: Response | null = null;
+    for (const base of baseCandidates) {
+      const anthropic = isAnthropicCompatibleBase(base);
+      const url = anthropic ? `${base}/v1/messages` : `${base}/chat/completions`;
+      const headerCandidates = anthropic
+        ? [
+            {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+            {
+              Authorization: `Bearer ${apiKey}`,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+          ]
+        : [
+            { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            { 'api-key': apiKey, 'Content-Type': 'application/json' },
+          ];
+      for (const headers of headerCandidates) {
+        const payload = anthropic
+          ? {
+              model: anthropicModel,
+              max_tokens: 1200,
+              temperature: 0.35,
+              system,
+              messages: [{ role: 'user', content: user }],
+            }
+          : {
+              model,
+              temperature: 0.35,
+              messages: [
+                { role: 'system', content: system },
+                { role: 'user', content: user },
+              ],
+            };
+        const candidate = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        if (candidate.ok) {
+          res = candidate;
+          break;
+        }
+        if (candidate.status !== 401 && candidate.status !== 404) {
+          res = candidate;
+          break;
+        }
+      }
+      if (res) break;
+    }
+    if (!res) return NextResponse.json(buildFallbackPlan(body));
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
@@ -190,8 +237,9 @@ Rules: Use only ngoId values present in the provided catalog. Percents must be i
 
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
+      content?: { type?: string; text?: string }[];
     };
-    const content = data.choices?.[0]?.message?.content;
+    const content = data.choices?.[0]?.message?.content || data.content?.find((c) => c.type === 'text')?.text;
     if (!content) {
       return NextResponse.json(buildFallbackPlan(body));
     }

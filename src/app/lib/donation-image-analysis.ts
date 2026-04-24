@@ -6,6 +6,10 @@ export type PhotoVerificationStatus = 'passed' | 'not_a_donation_photo' | 'wrong
 export interface DonationImageAnalysisResult {
   verification: PhotoVerificationStatus;
   condition: ItemCondition;
+  /** Best-effort category inferred from image content. */
+  detectedCategory?: string;
+  /** Optional compact evidence points extracted from the photo. */
+  keyDetails?: string[];
   /** Short description of what is visible (English). */
   visibleSummary: string;
   /** Shown to donor when verification !== passed or when condition is Damaged context. */

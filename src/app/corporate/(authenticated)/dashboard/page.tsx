@@ -1,7 +1,30 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { CorporateLedgerTable } from '../../../components/corporate/CorporateLedgerTable';
+import { LedgerDetailsModal } from '../../../components/corporate/LedgerDetailsModal';
+import { getSupabaseBrowserClient } from '../../../../lib/supabase/client';
+import {
+  appendLocalCorporateBulkDonation,
+  downloadLedgerReceiptText,
+  explainCorporateLedgerFetchFailure,
+  fetchCorporateLedgerEntries,
+  getCorporatePartnerIdForUser,
+  insertCorporateBulkLedgerEntry,
+  isCorporateLedgerSchemaCacheIssue,
+  isCorporateLedgerTableUnavailableMessage,
+  loadLocalCorporateLedger,
+  mergeDbAndLocalLedger,
+  parseBulkUnitsFromLedgerItem,
+  parseBulkWeightKgFromLedgerItem,
+  pruneLocalCorporateLedgerAgainstDb,
+  uploadCorporateBulkDonationPhotos,
+  type BulkDonationDetails,
+  type LedgerItem,
+  type LedgerStatus,
+} from '../../../../lib/supabase/corporate-ledger';
+import type { LucideIcon } from 'lucide-react';
 import {
   Download,
   Leaf,
@@ -18,46 +41,110 @@ import {
 } from 'lucide-react';
 
 type ReportState = 'idle' | 'loading' | 'ready';
-type LedgerStatus = 'pending' | 'completed' | 'delivered';
-type LedgerItem = {
-  id: string;
-  dateLabel: string;
-  activityType: string;
-  amountOrQty: string;
-  esgFocus: string;
-  status: LedgerStatus;
-  actionLabel: 'View Details' | 'View Receipt';
-  notes?: string;
+
+type MetricCard = {
+  title: string;
+  value: string;
+  icon: LucideIcon;
+  tone: string;
 };
 
-const METRICS = [
-  {
-    title: 'Waste Diverted from Landfill',
-    value: '500 kg',
-    icon: Leaf,
-    tone: 'text-green-700 bg-green-50 border-green-100',
-  },
-  {
-    title: 'CO2 Emissions Saved',
-    value: '1.2 Tons',
-    icon: Cloud,
-    tone: 'text-sky-700 bg-sky-50 border-sky-100',
-  },
-  {
-    title: 'Individuals Supported',
-    value: '2,500',
-    icon: HandHeart,
-    tone: 'text-[#da1a32] bg-red-50 border-red-100',
-  },
-  {
-    title: 'Verified NGO Handoffs',
-    value: '100%',
-    icon: ShieldCheck,
-    tone: 'text-purple-700 bg-purple-50 border-purple-100',
-  },
-];
+/** Rough CO₂ (tons) from diverted weight — same scale as prior demo (500 kg ≈ 1.2 t). Not a certified carbon audit. */
+function estimateCo2TonsFromWasteKg(wasteKg: number): number {
+  return wasteKg * 0.0024;
+}
 
-const ESG_REPORT = `# Q1 2026 Sustainability & ESG Report (Corporate Partner)\n\n## Executive Summary\nYour organization contributed materially to circular-economy and social-impact outcomes this quarter through item donation routing optimized by DonateAI. Portfolio impact shows balanced environmental, social, and governance performance with high handoff integrity.\n\n## Environmental Performance\n- Waste diverted from landfill: 500 kg\n- Estimated CO2 emissions saved: 1.2 tons\n- Major drivers: electronics repurposing and multi-NGO redistribution efficiency\n\n## Social Performance\n- Individuals supported: 2,500\n- High-impact channels: food routing, education equipment access, urgent-needs fulfillment\n- SDG alignment observed: SDG 2, SDG 4, SDG 12\n\n## Governance & Assurance\n- Verified NGO handoffs: 100%\n- Chain-of-custody confidence: high\n- Documentation posture: suitable for annual sustainability reporting appendix\n\n## AI Strategic Recommendations (Next Quarter)\n1. Launch a winter-clothing collection wave in early next month to preempt seasonal shortage signals.\n2. Maintain electronics donation cadence to preserve digital inclusion gains.\n3. Pilot a targeted food surplus routing day with pre-committed logistics windows to increase fulfillment speed.\n\n## Suggested Board-Level KPI Additions\n- % of donation volume routed to urgent-need cases\n- Repeat NGO reliability score\n- Cost-per-beneficiary equivalent (estimated)\n`;
+function computeMetricCards(items: LedgerItem[]): MetricCard[] {
+  const wasteKg = items.reduce((a, i) => a + parseBulkWeightKgFromLedgerItem(i), 0);
+  const units = items.reduce((a, i) => a + parseBulkUnitsFromLedgerItem(i), 0);
+  const done = items.filter((i) => i.status === 'completed' || i.status === 'delivered').length;
+  const denom = items.length;
+  const pct = denom ? Math.min(100, Math.round((done / denom) * 100)) : 0;
+  const co2Tons = estimateCo2TonsFromWasteKg(wasteKg);
+
+  return [
+    {
+      title: 'Waste Diverted from Landfill (est.)',
+      value: `${wasteKg.toLocaleString('en-GB', { maximumFractionDigits: 1 })} kg`,
+      icon: Leaf,
+      tone: 'text-green-700 bg-green-50 border-green-100',
+    },
+    {
+      title: 'CO₂ Emissions Saved (est.)',
+      value:
+        wasteKg > 0
+          ? `${co2Tons.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} tons`
+          : '—',
+      icon: Cloud,
+      tone: 'text-sky-700 bg-sky-50 border-sky-100',
+    },
+    {
+      title: 'Bulk Units on Record',
+      value: units.toLocaleString('en-GB'),
+      icon: HandHeart,
+      tone: 'text-[#da1a32] bg-red-50 border-red-100',
+    },
+    {
+      title: 'Ledger Completed / Delivered',
+      value: denom ? `${pct}%` : '—',
+      icon: ShieldCheck,
+      tone: 'text-purple-700 bg-purple-50 border-purple-100',
+    },
+  ];
+}
+
+function buildEsgReportMarkdown(items: LedgerItem[]): string {
+  const now = new Date();
+  const generatedAt = now.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const quarter = Math.floor(now.getMonth() / 3) + 1;
+  const year = now.getFullYear();
+  const wasteKg = items.reduce((a, i) => a + parseBulkWeightKgFromLedgerItem(i), 0);
+  const units = items.reduce((a, i) => a + parseBulkUnitsFromLedgerItem(i), 0);
+  const done = items.filter((i) => i.status === 'completed' || i.status === 'delivered').length;
+  const pending = items.filter((i) => i.status === 'pending').length;
+  const co2Tons = estimateCo2TonsFromWasteKg(wasteKg);
+  const sdgSet = new Set<string>();
+  for (const i of items) {
+    const m = i.esgFocus.match(/\bSDG\s*(\d{1,2})\b/i);
+    if (m) sdgSet.add(`SDG ${parseInt(m[1], 10)}`);
+  }
+  const sdgLine = sdgSet.size ? [...sdgSet].join(', ') : '—';
+
+  return [
+    `# Q${quarter} ${year} Sustainability & ESG Report (Corporate Partner)`,
+    '',
+    `Generated: ${generatedAt}`,
+    '',
+    '## Executive Summary',
+    `Figures below are computed from your Donation & Sponsorship Ledger (${items.length} line(s)) in this portal — not static marketing numbers.`,
+    '',
+    '## Environmental Performance (from ledger)',
+    `- Waste diverted (estimated total weight entered on submissions): ${wasteKg.toLocaleString('en-GB', { maximumFractionDigits: 1 })} kg`,
+    wasteKg > 0
+      ? `- Estimated CO₂ avoided (rough internal factor from weight): ${co2Tons.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} tons`
+      : '- Estimated CO₂ avoided: add “Estimated total weight (kg)” on bulk donations to produce an estimate.',
+    '',
+    '## Volume',
+    `- Bulk units summed from ledger rows: ${units.toLocaleString('en-GB')}`,
+    `- Pending vs completed/delivered: ${pending} pending, ${done} completed or delivered`,
+    '',
+    '## SDG tags observed (from ledger)',
+    `- ${sdgLine}`,
+    '',
+    '## Governance & Assurance',
+    '- Verified NGO handoffs: use ledger statuses (Completed / Delivered) as your internal fulfilment indicator; extend with real logistics data when available.',
+    '',
+    '## Next steps',
+    '1. Keep estimated weights on bulk submissions current for better environmental estimates.',
+    '2. When logistics sponsorship is tracked in the same ledger, these totals can include wallet-funded deliveries.',
+  ].join('\n');
+}
 
 export default function CorporateDashboardPage() {
   const router = useRouter();
@@ -67,37 +154,12 @@ export default function CorporateDashboardPage() {
     'RM 15 from your wallet funded a delivery of Textbooks to Hope School.',
     'Your bulk donation of 20 Monitors arrived at Pages Library.',
   ]);
+  const [corporatePartnerId, setCorporatePartnerId] = useState<string | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(true);
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [ledgerLocalFallback, setLedgerLocalFallback] = useState(false);
   const [ledgerFilter, setLedgerFilter] = useState<'all' | LedgerStatus>('all');
-  const [ledgerItems, setLedgerItems] = useState<LedgerItem[]>([
-    {
-      id: 'bulk-it-22apr',
-      dateLabel: '22 Apr 2026',
-      activityType: 'Bulk Asset: IT & Electronics',
-      amountOrQty: '50 units',
-      esgFocus: 'SDG 12',
-      status: 'pending',
-      actionLabel: 'View Details',
-      notes: 'Queued for NGO matching.',
-    },
-    {
-      id: 'sponsor-20apr',
-      dateLabel: '20 Apr 2026',
-      activityType: 'Logistics Sponsorship: Hope School',
-      amountOrQty: 'RM 15.00',
-      esgFocus: 'SDG 4',
-      status: 'completed',
-      actionLabel: 'View Receipt',
-    },
-    {
-      id: 'bulk-monitors-15apr',
-      dateLabel: '15 Apr 2026',
-      activityType: 'Bulk Asset: Office Monitors',
-      amountOrQty: '20 units',
-      esgFocus: 'SDG 12',
-      status: 'delivered',
-      actionLabel: 'View Receipt',
-    },
-  ]);
+  const [ledgerItems, setLedgerItems] = useState<LedgerItem[]>([]);
   const [assetCategory, setAssetCategory] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [totalUnits, setTotalUnits] = useState('');
@@ -105,82 +167,224 @@ export default function CorporateDashboardPage() {
   const [assetCondition, setAssetCondition] = useState<'like_new' | 'gently_used' | 'minor_repair'>('like_new');
   const [pickupLocation, setPickupLocation] = useState('');
   const [availablePickupDate, setAvailablePickupDate] = useState('');
-  const [contactName, setContactName] = useState('Aisyah Rahman');
-  const [contactPhone, setContactPhone] = useState('+60 12-345 6789');
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
   const [primaryImpactGoal, setPrimaryImpactGoal] = useState('SDG 12: Responsible Consumption and Production');
   const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [bulkFormKey, setBulkFormKey] = useState(0);
+  const [detailItem, setDetailItem] = useState<LedgerItem | null>(null);
 
-  const generateReport = () => {
+  const metricCards = useMemo(() => computeMetricCards(ledgerItems), [ledgerItems]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLedgerLoading(true);
+      setLedgerError(null);
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) {
+          if (!cancelled) {
+            setLedgerError('Sign in to load your ledger.');
+            setCorporatePartnerId(null);
+            setLedgerItems([]);
+          }
+          return;
+        }
+        const { partnerId, error: partnerErr } = await getCorporatePartnerIdForUser(supabase, user.id);
+        if (cancelled) return;
+        if (partnerErr || !partnerId) {
+          setLedgerError(partnerErr?.message ?? 'No corporate partner record for this account.');
+          setCorporatePartnerId(null);
+          setLedgerItems([]);
+          return;
+        }
+        setCorporatePartnerId(partnerId);
+        const { items, error: fetchErr } = await fetchCorporateLedgerEntries(supabase, partnerId);
+        if (cancelled) return;
+        if (fetchErr) {
+          const fullMsg = fetchErr.message;
+          const localMerged = mergeDbAndLocalLedger([], loadLocalCorporateLedger(partnerId));
+          setLedgerItems(localMerged);
+          if (isCorporateLedgerSchemaCacheIssue(fullMsg)) {
+            setLedgerLocalFallback(false);
+            setLedgerError(explainCorporateLedgerFetchFailure(fullMsg));
+          } else if (isCorporateLedgerTableUnavailableMessage(fullMsg)) {
+            setLedgerLocalFallback(true);
+            setLedgerError(null);
+          } else {
+            setLedgerLocalFallback(false);
+            setLedgerError(explainCorporateLedgerFetchFailure(fullMsg));
+          }
+          return;
+        }
+        pruneLocalCorporateLedgerAgainstDb(partnerId, items);
+        setLedgerItems(mergeDbAndLocalLedger(items, loadLocalCorporateLedger(partnerId)));
+        setLedgerLocalFallback(false);
+      } catch (e) {
+        if (!cancelled) setLedgerError(e instanceof Error ? e.message : 'Unable to load ledger.');
+      } finally {
+        if (!cancelled) setLedgerLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const generateReport = async () => {
     if (reportState === 'loading') return;
     setReportState('loading');
-    window.setTimeout(() => setReportState('ready'), 2200);
+    try {
+      if (corporatePartnerId) {
+        const supabase = getSupabaseBrowserClient();
+        const { items, error } = await fetchCorporateLedgerEntries(supabase, corporatePartnerId);
+        if (!error) {
+          pruneLocalCorporateLedgerAgainstDb(corporatePartnerId, items);
+          setLedgerItems(mergeDbAndLocalLedger(items, loadLocalCorporateLedger(corporatePartnerId)));
+          setLedgerLocalFallback(false);
+        }
+      }
+    } finally {
+      // Keep a short loading state for UX continuity, but render from latest fetched ledger data.
+      window.setTimeout(() => setReportState('ready'), 800);
+    }
   };
 
   const createBulkDonationDraft = () => {
+    setDetailItem(null);
     setShowBulkDonationModal(true);
   };
 
-  const submitBulkDonation = () => {
+  const submitBulkDonation = async () => {
     if (!assetCategory || !itemDescription || !totalUnits || !pickupLocation || !availablePickupDate) {
       window.alert('Please complete all required donation fields before submitting.');
       return;
+    }
+    if (!corporatePartnerId) {
+      window.alert('Your corporate account is not linked yet. Sign out and sign in again, or run the database migration for corporate_ledger_entries.');
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    let photoUrls: string[] | undefined;
+    if (photoFiles.length > 0) {
+      const { urls, error: upErr } = await uploadCorporateBulkDonationPhotos(
+        supabase,
+        corporatePartnerId,
+        photoFiles,
+      );
+      if (upErr) {
+        window.alert(
+          [
+            'Photo upload failed (your donation will still be saved without image files):',
+            upErr.message,
+            '',
+            'If the bucket is missing, create bucket corporate_bulk_donation_photos (public) and run:',
+            'supabase/corporate_bulk_donation_photos_storage.sql',
+          ].join('\n'),
+        );
+      } else if (urls.length > 0) {
+        photoUrls = urls;
+      }
+    }
+
+    const bulkDetails: BulkDonationDetails = {
+      assetCategory,
+      itemDescription,
+      totalUnits,
+      estimatedWeightKg: estimatedWeightKg || '',
+      assetCondition,
+      pickupLocation,
+      availablePickupDate,
+      contactName,
+      contactPhone,
+      primaryImpactGoal,
+      photoFileCount: photoFiles.length,
+      ...(photoUrls && photoUrls.length > 0 ? { photoUrls } : {}),
+    };
+    const esgFocus = primaryImpactGoal.replace(':', '').slice(0, 6).includes('SDG')
+      ? (primaryImpactGoal.split(':')[0] ?? 'SDG 12')
+      : 'SDG 12';
+    const { error: insertErr } = await insertCorporateBulkLedgerEntry(supabase, corporatePartnerId, {
+      activityType: `Bulk Asset: ${assetCategory}`,
+      amountOrQty: `${totalUnits} units`,
+      esgFocus,
+      notes: itemDescription,
+      bulkDetails,
+    });
+    if (insertErr) {
+      if (isCorporateLedgerTableUnavailableMessage(insertErr.message)) {
+        appendLocalCorporateBulkDonation(corporatePartnerId, {
+          activityType: `Bulk Asset: ${assetCategory}`,
+          amountOrQty: `${totalUnits} units`,
+          esgFocus,
+          notes: itemDescription,
+          bulkDetails,
+        });
+        setLedgerLocalFallback(true);
+        const { items: retryItems, error: retryErr } = await fetchCorporateLedgerEntries(
+          supabase,
+          corporatePartnerId,
+        );
+        if (retryErr && isCorporateLedgerTableUnavailableMessage(retryErr.message)) {
+          setLedgerItems(loadLocalCorporateLedger(corporatePartnerId));
+        } else if (!retryErr) {
+          pruneLocalCorporateLedgerAgainstDb(corporatePartnerId, retryItems);
+          setLedgerItems(mergeDbAndLocalLedger(retryItems, loadLocalCorporateLedger(corporatePartnerId)));
+          setLedgerLocalFallback(false);
+        } else {
+          setLedgerItems(loadLocalCorporateLedger(corporatePartnerId));
+        }
+      } else {
+        window.alert(explainCorporateLedgerFetchFailure(insertErr.message));
+        return;
+      }
+    } else {
+      const { items, error: reloadErr } = await fetchCorporateLedgerEntries(supabase, corporatePartnerId);
+      if (reloadErr) {
+        window.alert(`Saved, but list refresh failed:\n${explainCorporateLedgerFetchFailure(reloadErr.message)}`);
+        return;
+      }
+      pruneLocalCorporateLedgerAgainstDb(corporatePartnerId, items);
+      setLedgerItems(mergeDbAndLocalLedger(items, loadLocalCorporateLedger(corporatePartnerId)));
+      setLedgerLocalFallback(false);
     }
     setImpactEvents((prev) => [
       `Bulk donation submitted: ${totalUnits} units (${assetCategory}) queued for AI matching under ${primaryImpactGoal}.`,
       ...prev,
     ]);
-    const today = new Date();
-    const dateLabel = today.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-    setLedgerItems((prev) => [
-      {
-        id: `bulk-${today.getTime()}`,
-        dateLabel,
-        activityType: `Bulk Asset: ${assetCategory}`,
-        amountOrQty: `${totalUnits} units`,
-        esgFocus: primaryImpactGoal.replace(':', '').slice(0, 6).includes('SDG')
-          ? primaryImpactGoal.split(':')[0]
-          : 'SDG 12',
-        status: 'pending',
-        actionLabel: 'View Details',
-        notes: itemDescription,
-      },
-      ...prev,
-    ]);
     setShowBulkDonationModal(false);
+    setLedgerFilter('all');
+    setAssetCategory('');
+    setItemDescription('');
+    setTotalUnits('');
+    setEstimatedWeightKg('');
+    setAssetCondition('like_new');
+    setPickupLocation('');
+    setAvailablePickupDate('');
+    setContactName('');
+    setContactPhone('');
+    setPrimaryImpactGoal('SDG 12: Responsible Consumption and Production');
+    setPhotoFiles([]);
+    setBulkFormKey((k) => k + 1);
   };
 
   const openLedgerAction = (item: LedgerItem) => {
-    if (item.actionLabel === 'View Receipt') {
-      const receipt = [
-        `Receipt`,
-        `Date: ${item.dateLabel}`,
-        `Activity: ${item.activityType}`,
-        `Amount/Qty: ${item.amountOrQty}`,
-        `ESG Focus: ${item.esgFocus}`,
-        `Status: ${item.status}`,
-      ].join('\n');
-      const blob = new Blob([receipt], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${item.id}-receipt.txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+    if (item.status !== 'pending') {
+      downloadLedgerReceiptText(item);
       return;
     }
-    window.alert(`${item.activityType}\n\n${item.notes || 'Pending AI match and logistics routing.'}`);
-  };
-
-  const statusBadge = (status: LedgerStatus) => {
-    if (status === 'pending') {
-      return <span className="inline-flex rounded-full bg-amber-100 border border-amber-200 px-2 py-0.5 text-xs font-medium text-amber-800">⏳ Pending AI Match</span>;
-    }
-    if (status === 'completed') {
-      return <span className="inline-flex rounded-full bg-green-100 border border-green-200 px-2 py-0.5 text-xs font-medium text-green-800">✅ Completed</span>;
-    }
-    return <span className="inline-flex rounded-full bg-green-100 border border-green-200 px-2 py-0.5 text-xs font-medium text-green-800">✅ Delivered</span>;
+    // Defer open so the click that opened the dialog cannot hit a new underlay in the same frame.
+    // Portal to document.body avoids clipping / z-index traps from layout ancestors.
+    window.setTimeout(() => {
+      setDetailItem({
+        ...item,
+        bulkDetails: item.bulkDetails ? { ...item.bulkDetails } : undefined,
+      });
+    }, 0);
   };
 
   const goToWalletTopUp = () => {
@@ -196,8 +400,7 @@ export default function CorporateDashboardPage() {
             <h1 className="text-xl font-bold text-[#000000]">GLM Report Generation In Progress</h1>
           </div>
           <p className="text-gray-600 text-sm">
-            GLM is analyzing 1,420 transaction nodes, donor behavior signals, and verified handoff logs to draft your
-            Q1 2026 ESG narrative...
+            Refreshing your latest ledger rows and generating an ESG narrative directly from current uploaded data...
           </p>
         </div>
       </div>
@@ -221,7 +424,7 @@ export default function CorporateDashboardPage() {
             </button>
           </div>
           <article className="prose prose-sm max-w-none whitespace-pre-line text-[#000000] leading-relaxed">
-            {ESG_REPORT}
+            {buildEsgReportMarkdown(ledgerItems)}
           </article>
         </div>
       </div>
@@ -235,7 +438,8 @@ export default function CorporateDashboardPage() {
           <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
             ESG REPORTING TRIGGER
           </p>
-          <h1 className="text-2xl font-bold text-[#000000]">Q1 2026 Sustainability & ESG Report is Ready.</h1>
+          <h1 className="text-2xl font-bold text-[#000000]">Live Sustainability & ESG Report is Ready.</h1>
+          <p className="text-xs text-gray-500 mt-1">This report always uses your latest saved ledger rows.</p>
           <p className="text-sm text-gray-600 mt-1">
             Generate a polished, copy-ready narrative from your tracked bulk donations and sponsored logistics data.
           </p>
@@ -249,7 +453,7 @@ export default function CorporateDashboardPage() {
       </section>
 
       <section className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {METRICS.map((m) => {
+        {metricCards.map((m) => {
           const Icon = m.icon;
           return (
             <div key={m.title} className="bg-white rounded-2xl border-2 border-[#e5e5e5] shadow-sm p-5">
@@ -262,6 +466,10 @@ export default function CorporateDashboardPage() {
           );
         })}
       </section>
+      <p className="text-xs text-gray-500 -mt-2 px-1">
+        KPI cards follow your Donation and Sponsorship Ledger. Enter estimated weight (kg) on bulk submissions for
+        waste and CO₂ estimates; units are summed from submitted quantities on each ledger line.
+      </p>
 
       <section className="bg-white rounded-2xl border-2 border-[#e5e5e5] shadow-sm p-5">
         <div className="flex items-center gap-2 mb-4">
@@ -317,67 +525,44 @@ export default function CorporateDashboardPage() {
       </section>
 
       <section className="bg-white rounded-2xl border-2 border-[#e5e5e5] shadow-sm p-5">
-        <div className="flex items-center justify-between gap-2 mb-4">
-          <div>
-            <h2 className="text-lg font-bold text-[#000000]">📋 Donation & Sponsorship Ledger</h2>
-            <p className="text-sm text-gray-600">Track the status of your bulk asset submissions and logistics funding.</p>
+        <div className="mb-4">
+          <h2 className="text-lg font-bold text-[#000000]">📋 Donation & Sponsorship Ledger</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Showing the three most recent entries from your saved activity. Use View Full History for the complete list.
+          </p>
+        </div>
+        {ledgerLocalFallback ? (
+          <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-950">
+            <strong className="font-semibold">Browser-only mode:</strong> the Supabase table{' '}
+            <code className="rounded bg-white/80 px-1 text-xs">corporate_ledger_entries</code> is not set up yet, so
+            new donations are stored in this browser. They survive refresh and logout on the same device, but not
+            across devices. Run <code className="text-xs">supabase/corporate_ledger_entries.sql</code> in your project
+            to enable cloud storage.
           </div>
-          <label className="text-sm text-gray-600">
-            <span className="mr-2">Filter:</span>
-            <select
-              value={ledgerFilter}
-              onChange={(e) => setLedgerFilter(e.target.value as 'all' | LedgerStatus)}
-              className="rounded-lg border border-[#e5e5e5] px-2.5 py-1.5 text-sm"
-            >
-              <option value="all">All Activity</option>
-              <option value="pending">Pending AI Match</option>
-              <option value="completed">Completed</option>
-              <option value="delivered">Delivered</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-sm">
-            <thead>
-              <tr className="bg-[#edf2f4]/70 text-left text-gray-600">
-                <th className="px-3 py-2.5 font-semibold">Date</th>
-                <th className="px-3 py-2.5 font-semibold">Activity Type</th>
-                <th className="px-3 py-2.5 font-semibold">Amount / Qty</th>
-                <th className="px-3 py-2.5 font-semibold">ESG Focus</th>
-                <th className="px-3 py-2.5 font-semibold">Status</th>
-                <th className="px-3 py-2.5 font-semibold">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledgerItems
-                .filter((item) => (ledgerFilter === 'all' ? true : item.status === ledgerFilter))
-                .map((item) => (
-                  <tr key={item.id} className="border-b border-[#edf2f4] last:border-b-0">
-                    <td className="px-3 py-3 text-gray-700">{item.dateLabel}</td>
-                    <td className="px-3 py-3 text-[#000000] font-medium">{item.activityType}</td>
-                    <td className="px-3 py-3 text-gray-700">{item.amountOrQty}</td>
-                    <td className="px-3 py-3">
-                      <span className="inline-block px-2 py-0.5 rounded-lg text-xs border border-[#e5e5e5] bg-[#edf2f4]">{item.esgFocus}</span>
-                    </td>
-                    <td className="px-3 py-3">{statusBadge(item.status)}</td>
-                    <td className="px-3 py-3">
-                      <button
-                        onClick={() => openLedgerAction(item)}
-                        className="inline-flex items-center rounded-lg border border-[#e5e5e5] px-2.5 py-1.5 text-xs font-medium hover:bg-[#edf2f4] transition-all"
-                      >
-                        {item.actionLabel}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
+        ) : null}
+        {ledgerLoading ? (
+          <p className="text-sm text-gray-600 py-6">Loading ledger…</p>
+        ) : (
+          <>
+            {ledgerError ? (
+              <p className="mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 whitespace-pre-line">
+                {ledgerError}
+              </p>
+            ) : null}
+            <CorporateLedgerTable
+              items={ledgerItems}
+              ledgerFilter={ledgerFilter}
+              onLedgerFilterChange={setLedgerFilter}
+              maxRows={3}
+              onRowAction={openLedgerAction}
+            />
+          </>
+        )}
 
         <div className="mt-4 text-center">
           <button
-            onClick={() => router.push('/corporate/reports')}
+            type="button"
+            onClick={() => router.push('/corporate/history')}
             className="inline-flex items-center gap-1 text-sm font-medium text-[#da1a32] hover:underline underline-offset-2"
           >
             View Full History ➔
@@ -386,7 +571,7 @@ export default function CorporateDashboardPage() {
       </section>
 
       {showBulkDonationModal ? (
-        <div className="fixed inset-0 z-[80] bg-black/40 p-4 flex items-center justify-center">
+        <div className="fixed inset-0 z-[90] bg-black/40 p-4 flex items-center justify-center">
           <div className="w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl border-2 border-[#e5e5e5] shadow-2xl">
             <div className="p-5 border-b border-[#e5e5e5] flex items-start justify-between gap-3">
               <div>
@@ -415,10 +600,10 @@ export default function CorporateDashboardPage() {
                       className="mt-1.5 w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2.5"
                     >
                       <option value="">Select Category</option>
-                      <option>IT & Electronics</option>
-                      <option>Office Furniture</option>
-                      <option>Surplus Apparel</option>
-                      <option>Non-Perishable Food</option>
+                      <option value="IT & Electronics">IT & Electronics</option>
+                      <option value="Office Furniture">Office Furniture</option>
+                      <option value="Surplus Apparel">Surplus Apparel</option>
+                      <option value="Non-Perishable Food">Non-Perishable Food</option>
                     </select>
                   </label>
                   <label className="text-sm text-gray-700 md:col-span-2">
@@ -475,6 +660,7 @@ export default function CorporateDashboardPage() {
                     <Camera className="w-5 h-5 text-[#da1a32] mx-auto mb-2" />
                     <span className="text-sm text-gray-700">📷 Drag and drop images here, or browse files</span>
                     <input
+                      key={bulkFormKey}
                       type="file"
                       multiple
                       accept="image/*"
@@ -512,6 +698,7 @@ export default function CorporateDashboardPage() {
                     <input
                       value={contactName}
                       onChange={(e) => setContactName(e.target.value)}
+                      placeholder="Contact name"
                       className="mt-1.5 w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2.5"
                     />
                   </label>
@@ -536,10 +723,12 @@ export default function CorporateDashboardPage() {
                     onChange={(e) => setPrimaryImpactGoal(e.target.value)}
                     className="mt-1.5 w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2.5"
                   >
-                    <option>SDG 12: Responsible Consumption and Production</option>
-                    <option>SDG 4: Quality Education</option>
-                    <option>SDG 1: No Poverty</option>
-                    <option>SDG 2: Zero Hunger</option>
+                    <option value="SDG 12: Responsible Consumption and Production">
+                      SDG 12: Responsible Consumption and Production
+                    </option>
+                    <option value="SDG 4: Quality Education">SDG 4: Quality Education</option>
+                    <option value="SDG 1: No Poverty">SDG 1: No Poverty</option>
+                    <option value="SDG 2: Zero Hunger">SDG 2: Zero Hunger</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
                     Select which corporate SDG target this specific bulk donation should count toward.
@@ -565,6 +754,8 @@ export default function CorporateDashboardPage() {
           </div>
         </div>
       ) : null}
+
+      <LedgerDetailsModal detailItem={detailItem} onClose={() => setDetailItem(null)} />
     </div>
   );
 }

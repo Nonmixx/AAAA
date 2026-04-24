@@ -1,6 +1,62 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
 import { User, Mail, Phone, MapPin, Heart, Package, TrendingUp } from 'lucide-react';
+import { fetchDonorProfileEditor, updateDonorProfile } from '@/lib/supabase/donor-profile';
 
 export function DonorProfile() {
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const row = await fetchDonorProfileEditor();
+      if (!row) {
+        setErrorMessage('You need to be signed in to view this profile.');
+        return;
+      }
+      setFullName(row.fullName);
+      setEmail(row.email);
+      setPhone(row.phone);
+      setAddress(row.address);
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : 'Could not load profile.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    setSaving(true);
+    try {
+      await updateDonorProfile({ fullName, phone, address });
+      setSuccessMessage('Profile saved. Your dashboard will show this name on your next visit.');
+      void load();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('donor-profile-updated'));
+      }
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : 'Could not save profile.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="mb-8">
@@ -12,61 +68,88 @@ export function DonorProfile() {
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
             <h2 className="text-xl mb-6 text-[#000000] font-bold">Personal Information</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm mb-2 text-[#000000] font-medium">Full Name</label>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                  <input
-                    type="text"
-                    defaultValue="Sarah Johnson"
-                    className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
-                  />
-                </div>
-              </div>
 
-              <div className="grid md:grid-cols-2 gap-4">
+            {loading ? (
+              <p className="text-sm text-gray-500">Loading your profile…</p>
+            ) : (
+              <form className="space-y-4" onSubmit={(e) => void handleSave(e)}>
+                {errorMessage ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {errorMessage}
+                  </div>
+                ) : null}
+                {successMessage ? (
+                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                    {successMessage}
+                  </div>
+                ) : null}
+
                 <div>
-                  <label className="block text-sm mb-2 text-[#000000] font-medium">Email</label>
+                  <label className="block text-sm mb-2 text-[#000000] font-medium">Full Name</label>
                   <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                     <input
-                      type="email"
-                      defaultValue="sarah.johnson@email.com"
+                      type="text"
+                      required
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
                       className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
                     />
                   </div>
                 </div>
 
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm mb-2 text-[#000000] font-medium">Email</label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                      <input
+                        type="email"
+                        readOnly
+                        value={email}
+                        className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl bg-gray-50 text-gray-700 cursor-not-allowed"
+                        title="Email is managed by your login. Contact support to change it."
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Sign-in email (change via Supabase account settings if enabled).</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm mb-2 text-[#000000] font-medium">Phone</label>
+                    <div className="relative">
+                      <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                      <input
+                        type="tel"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-sm mb-2 text-[#000000] font-medium">Phone</label>
+                  <label className="block text-sm mb-2 text-[#000000] font-medium">Address</label>
                   <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input
-                      type="tel"
-                      defaultValue="+60 12-345 6789"
+                    <MapPin className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
+                    <textarea
+                      rows={3}
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
                       className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
                     />
                   </div>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-sm mb-2 text-[#000000] font-medium">Address</label>
-                <div className="relative">
-                  <MapPin className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
-                  <textarea
-                    rows={3}
-                    defaultValue="123, Jalan Sultan Ismail, Kuala Lumpur, 50250"
-                    className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
-                  />
-                </div>
-              </div>
-
-              <button className="bg-[#da1a32] text-white px-6 py-3 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium">
-                Save Changes
-              </button>
-            </div>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="bg-[#da1a32] text-white px-6 py-3 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving ? 'Saving…' : 'Save Changes'}
+                </button>
+              </form>
+            )}
           </div>
 
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">

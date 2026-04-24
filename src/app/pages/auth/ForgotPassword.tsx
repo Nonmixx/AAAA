@@ -1,7 +1,44 @@
+'use client';
+
+import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Mail, Heart, ArrowLeft } from 'lucide-react';
 
 export function ForgotPassword() {
+  const router = useRouter();
+  const [email, setEmail] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setLoading(true);
+    try {
+      const response = await fetch('/api/auth/password-reset/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const payload = (await response.json()) as { expiresAt?: string; error?: string };
+      if (!response.ok) {
+        setErrorMessage(payload.error ?? 'Unable to send verification code.');
+        return;
+      }
+
+      const params = new URLSearchParams({
+        email,
+        expiresAt: payload.expiresAt ?? new Date(Date.now() + 2 * 60 * 1000).toISOString(),
+      });
+      router.push(`/forgot-password/verify?${params.toString()}`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to send verification code.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-md">
       <div className="text-center mb-8">
@@ -9,11 +46,11 @@ export function ForgotPassword() {
           <Heart className="w-8 h-8 text-white" fill="white" />
         </div>
         <h1 className="text-3xl mb-2 text-white font-bold">Reset Password</h1>
-        <p className="text-white opacity-80">Enter your email to receive reset instructions</p>
+        <p className="text-white opacity-80">Enter your email to receive a 4-digit verification code</p>
       </div>
 
       <div className="bg-white rounded-lg shadow-xl p-8">
-        <form className="space-y-6">
+        <form className="space-y-6" onSubmit={(e) => void handleSubmit(e)}>
           <div>
             <label className="block text-sm mb-2 text-[#000000] font-medium">Email Address</label>
             <div className="relative">
@@ -21,16 +58,24 @@ export function ForgotPassword() {
               <input
                 type="email"
                 placeholder="Enter your email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
               />
             </div>
           </div>
 
+          {errorMessage ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errorMessage}</div>
+          ) : null}
+
           <button
             type="submit"
+            disabled={loading}
             className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg"
           >
-            Send Reset Link
+            {loading ? 'Sending code...' : 'Send Verification Code'}
           </button>
         </form>
 

@@ -1,27 +1,128 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, Lock, Heart } from 'lucide-react';
+import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { resolveAuthenticatedRoute, type AppRole } from '@/lib/supabase/auth';
+
+function loginTabMatchesProfileRole(
+  tab: 'donor' | 'receiver' | 'corporate_partner',
+  profileRole: string | undefined,
+): boolean {
+  if (!profileRole) return false;
+  if (tab === 'donor') return profileRole === 'donor';
+  if (tab === 'corporate_partner') return profileRole === 'corporate_partner';
+  return profileRole === 'receiver' || profileRole === 'admin';
+}
+
+function profileRoleLabel(role: string | undefined): string {
+  if (role === 'donor') return 'Donor';
+  if (role === 'receiver') return 'Receiver';
+  if (role === 'admin') return 'Admin';
+  if (role === 'corporate_partner') return 'Corporate Partner';
+  return role ?? 'Unknown';
+}
 
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [role, setRole] = useState<'donor' | 'receiver' | 'corporate_partner'>('donor');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const showRegisteredBanner = searchParams.get('registered') === '1';
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    const r = searchParams.get('role');
+    if (r === 'donor' || r === 'receiver' || r === 'corporate_partner') {
+      setRole(r);
+    }
+  }, [searchParams]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage(null);
 
     const redirectTarget = searchParams.get('redirect');
     if (redirectTarget?.startsWith('/')) {
       return router.push(redirectTarget);
     }
 
-    if (role === 'donor') return router.push('/donor/dashboard');
-    if (role === 'receiver') return router.push('/receiver');
-    return router.push('/corporate/dashboard');
+    setLoading(true);
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        setErrorMessage(error.message);
+        return;
+      }
+
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) {
+        setErrorMessage('Signed in, but user session was not found.');
+        return;
+      }
+
+      const { data: profileRow, error: profileReadError } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (profileReadError) {
+        setErrorMessage(profileReadError.message);
+        await supabase.auth.signOut();
+        return;
+      }
+
+      if (!loginTabMatchesProfileRole(role, profileRow?.role)) {
+        await supabase.auth.signOut();
+        setErrorMessage(
+          `This email is registered as ${profileRoleLabel(profileRow?.role)}. Choose the matching login type above.`,
+        );
+        return;
+      }
+
+      if (role === 'corporate_partner') {
+        const { data: cp, error: cpError } = await supabase
+          .from('corporate_partners')
+          .select('id')
+          .eq('owner_profile_id', user.id)
+          .maybeSingle();
+
+        if (cpError) {
+          setErrorMessage(cpError.message);
+          await supabase.auth.signOut();
+          return;
+        }
+        if (!cp) {
+          await supabase.auth.signOut();
+          setErrorMessage(
+            'No corporate partner record for this account. Complete corporate sign-up or use another login type.',
+          );
+          return;
+        }
+      }
+
+      const preferred: AppRole =
+        role === 'receiver' ? 'receiver' : role === 'corporate_partner' ? 'corporate_partner' : 'donor';
+      const route = await resolveAuthenticatedRoute(preferred);
+      router.replace(
+        route ??
+          (role === 'receiver' ? '/receiver' : role === 'corporate_partner' ? '/corporate/dashboard' : '/donor/dashboard'),
+      );
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to sign in.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -77,7 +178,7 @@ export default function LoginPage() {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1.5">
               Email Address
@@ -88,6 +189,9 @@ export default function LoginPage() {
                 id="email"
                 type="email"
                 required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
                 className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-[#da1a32] focus:border-transparent text-[#000000]"
                 placeholder="you@example.com"
               />
@@ -104,11 +208,18 @@ export default function LoginPage() {
                 id="password"
                 type="password"
                 required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
                 className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-[#da1a32] focus:border-transparent text-[#000000]"
                 placeholder="••••••••"
               />
             </div>
           </div>
+
+          {errorMessage ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errorMessage}</div>
+          ) : null}
 
           <div className="flex items-center justify-between text-sm">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -122,9 +233,10 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg"
+            disabled={loading}
+            className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Login
+            {loading ? 'Signing in…' : 'Login'}
           </button>
         </form>
 

@@ -8,6 +8,7 @@ import {
   LogOut, Menu, Bell, Zap, Settings, X,
 } from 'lucide-react';
 import { useDonorContext } from '../../context/DonorContext';
+import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 
 interface Notification {
   id: string;
@@ -290,7 +291,16 @@ export function DonorAuthLayout({ children }: { children: React.ReactNode }) {
                     </div>
                     <div className="py-2">
                       <button
-                        onClick={() => { setMenuOpen(false); router.push('/donor'); }}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          void (async () => {
+                            try {
+                              await getSupabaseBrowserClient().auth.signOut();
+                            } finally {
+                              router.replace('/donor');
+                            }
+                          })();
+                        }}
                         className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-[#da1a32] hover:bg-[#edf2f4] transition-all"
                       >
                         <LogOut className="w-4 h-4" />
