@@ -3,6 +3,7 @@ import { Building2, Mail, Phone, MapPin, FileText, CheckCircle2, Clock, XCircle,
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { getCurrentReceiverContext } from '@/lib/supabase/receiver';
 import { uploadPublicImage } from '@/lib/supabase/media';
+import { geocodeMalaysiaAddress } from '@/lib/geocoding';
 
 type VerificationStatus = 'pending' | 'approved' | 'rejected';
 
@@ -14,6 +15,9 @@ type Organization = {
   contact_email: string;
   contact_phone: string | null;
   address: string | null;
+  location_name: string | null;
+  latitude: number | null;
+  longitude: number | null;
   description: string | null;
   verification_status: VerificationStatus;
   created_at: string;
@@ -142,6 +146,7 @@ export function ReceiverProfile() {
     try {
       const supabase = getSupabaseBrowserClient();
       let logoUrl = organization.logo_url;
+      const geocoded = organization.address ? await geocodeMalaysiaAddress(organization.address) : null;
 
       if (logoFile) {
         logoUrl = await uploadPublicImage(logoFile, `organizations/${organization.id}`);
@@ -156,6 +161,9 @@ export function ReceiverProfile() {
           contact_email: organization.contact_email,
           contact_phone: organization.contact_phone,
           address: organization.address,
+          location_name: geocoded?.locationName ?? organization.location_name ?? null,
+          latitude: geocoded?.latitude ?? organization.latitude ?? null,
+          longitude: geocoded?.longitude ?? organization.longitude ?? null,
           description: organization.description,
         })
         .eq('id', organization.id);

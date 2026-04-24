@@ -1,13 +1,19 @@
+'use client';
+
 import Link from 'next/link';
 import { Building2, MapPin, Package, AlertCircle, Zap } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { useDonorContext } from '../../context/DonorContext';
+import type { PublicBrowseReceiver } from '@/lib/publicNeeds';
 
 const mockReceivers = [
   {
     id: '1',
     name: 'Hope Orphanage',
     location: 'Kuala Lumpur',
-    distance: '2.5 km',
+    latitude: 3.139,
+    longitude: 101.6869,
     emergency: true,
     emergencyReason: 'Flash flood displaced 80 children',
     items: [
@@ -19,7 +25,8 @@ const mockReceivers = [
     id: '2',
     name: 'Care Foundation',
     location: 'Petaling Jaya',
-    distance: '5.1 km',
+    latitude: 3.1073,
+    longitude: 101.6067,
     emergency: true,
     emergencyReason: 'Critical shortage after donations halted',
     items: [
@@ -29,26 +36,28 @@ const mockReceivers = [
   },
   {
     id: '3',
-    name: 'Sunshine Children Home',
-    location: 'Subang Jaya',
-    distance: '8.3 km',
+    name: 'Pages Library',
+    location: 'George Town',
+    latitude: 5.4164,
+    longitude: 100.3327,
     emergency: false,
     emergencyReason: '',
     items: [
-      { item: 'Clothing', quantity: 120, urgency: 'medium' },
-      { item: 'Toys', quantity: 60, urgency: 'low' },
+      { item: 'Bookshelves', quantity: 8, urgency: 'medium' },
+      { item: 'Floor Mats', quantity: 20, urgency: 'low' },
     ],
   },
   {
     id: '4',
-    name: 'Elderly Care Center',
-    location: 'Shah Alam',
-    distance: '12.4 km',
+    name: 'Urban Shelter',
+    location: 'Johor Bahru',
+    latitude: 1.4927,
+    longitude: 103.7414,
     emergency: false,
     emergencyReason: '',
     items: [
-      { item: 'Wheelchairs', quantity: 10, urgency: 'high' },
-      { item: 'Medicine', quantity: 50, urgency: 'medium' },
+      { item: 'Bottled Water', quantity: 500, urgency: 'high' },
+      { item: 'Baby Formula', quantity: 120, urgency: 'medium' },
     ],
   },
 ];
@@ -59,15 +68,86 @@ const urgencyColors: Record<string, string> = {
   low: 'bg-green-50 text-green-600 border-green-100',
 };
 
-export function ReceiverNeedsList() {
+type ReceiverNeedsListProps = {
+  detailBasePath?: string;
+  showBackButton?: boolean;
+  backHref?: string;
+  /** Live rows from Supabase; merged ahead of demo data when present. */
+  liveReceivers?: PublicBrowseReceiver[];
+};
+
+export function ReceiverNeedsList({
+  detailBasePath = '/donor/needs',
+  showBackButton = false,
+  backHref = '/donor',
+  liveReceivers = [],
+}: ReceiverNeedsListProps) {
+  const pathname = usePathname();
   const { emergencyMode } = useDonorContext();
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      () => {
+        setUserLocation(null);
+      },
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+    );
+  }, []);
+
+  const distanceKm = (aLat: number, aLng: number, bLat: number, bLng: number) => {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const earthKm = 6371;
+    const dLat = toRad(bLat - aLat);
+    const dLng = toRad(bLng - aLng);
+    const x =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    return earthKm * c;
+  };
+
+  const distanceLabel = (receiver: { latitude?: number | null; longitude?: number | null }) => {
+    if (!userLocation || receiver.latitude == null || receiver.longitude == null) return 'Nearby';
+    const km = distanceKm(userLocation.latitude, userLocation.longitude, receiver.latitude, receiver.longitude);
+    return `${km.toFixed(1)} km`;
+  };
+
+  // Guard against merge regressions: keep public /needs flow on public routes.
+  const isPublicNeedsRoute = pathname?.startsWith('/needs');
+  const resolvedDetailBasePath = isPublicNeedsRoute ? '/needs' : detailBasePath;
+  const resolvedShowBackButton = isPublicNeedsRoute ? true : showBackButton;
+  const resolvedBackHref = isPublicNeedsRoute ? '/donor' : backHref;
+
+  const mergedReceivers = useMemo(() => {
+    const demoIds = new Set(mockReceivers.map((r) => r.id));
+    const uniqueLive = liveReceivers.filter((r) => !demoIds.has(r.id));
+    return [...uniqueLive, ...mockReceivers];
+  }, [liveReceivers]);
 
   const sortedReceivers = emergencyMode
-    ? [...mockReceivers].sort((a, b) => (b.emergency ? 1 : 0) - (a.emergency ? 1 : 0))
-    : mockReceivers;
+    ? [...mergedReceivers].sort((a, b) => (b.emergency ? 1 : 0) - (a.emergency ? 1 : 0))
+    : mergedReceivers;
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {resolvedShowBackButton && (
+        <div className="mb-4">
+          <Link href={resolvedBackHref}>
+            <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
+              Back
+            </button>
+          </Link>
+        </div>
+      )}
+
       <div className="mb-8">
         <h1 className="text-3xl mb-2 text-[#000000] font-bold">Organizations in Need</h1>
         <p className="text-gray-600">Browse and support organizations that need your help</p>
@@ -102,7 +182,7 @@ export function ReceiverNeedsList() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         {sortedReceivers.map((receiver) => (
-          <Link key={receiver.id} href={`/donor/needs/${receiver.id}`}>
+          <Link key={receiver.id} href={`${resolvedDetailBasePath}/${receiver.id}`}>
             <div
               className={`bg-white rounded-2xl p-6 border-2 shadow-sm hover:shadow-md hover:border-[#da1a32] transition-all cursor-pointer ${
                 emergencyMode && receiver.emergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'
@@ -124,7 +204,7 @@ export function ReceiverNeedsList() {
                     </div>
                     <div className="flex items-center gap-2 text-sm text-gray-600">
                       <MapPin className="w-4 h-4" />
-                      {receiver.location} • {receiver.distance}
+                      {receiver.location} • {distanceLabel(receiver)}
                     </div>
                   </div>
                 </div>
@@ -157,8 +237,8 @@ export function ReceiverNeedsList() {
               </div>
 
               <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
-                <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium">
-                  View Details →
+                <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium text-right">
+                  View Details
                 </div>
               </div>
             </div>

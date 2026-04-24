@@ -18,8 +18,8 @@ export default function CorporatePricingPage() {
       <div className="max-w-6xl mx-auto">
         <div className="mb-4">
           <Link href="/donor">
-            <button className="inline-flex items-center gap-1.5 rounded-lg border border-[#e5e5e5] bg-white px-3 py-2 text-sm font-medium text-[#000000] hover:bg-[#edf2f4] transition-all">
-              ← Back
+            <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
+              Back
             </button>
           </Link>
         </div>

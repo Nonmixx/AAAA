@@ -1,10 +1,18 @@
 import { DonorLayout } from '../components/layouts/DonorLayout';
-import { ViewNeeds } from '../pages/public/ViewNeeds';
+import { ReceiverNeedsList } from '../pages/donor/ReceiverNeedsList';
+import { fetchPublicBrowseReceivers } from '@/lib/publicNeeds';
 
-export default function NeedsPage() {
+export default async function NeedsPage() {
+  const liveReceivers = await fetchPublicBrowseReceivers();
+
   return (
     <DonorLayout>
-      <ViewNeeds />
+      <ReceiverNeedsList
+        detailBasePath="/needs"
+        showBackButton
+        backHref="/donor"
+        liveReceivers={liveReceivers}
+      />
     </DonorLayout>
   );
 }

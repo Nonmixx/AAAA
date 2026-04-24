@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Heart, Building2, FileText, Upload, Phone, Mail, Lock, User } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { ensureProfile, ensureSessionAfterSignUp, resolveAuthenticatedRoute } from '@/lib/supabase/auth';
+import { geocodeMalaysiaAddress } from '@/lib/geocoding';
 
 export function ReceiverVerification() {
   const router = useRouter();
@@ -160,6 +161,8 @@ export function ReceiverVerification() {
         return;
       }
 
+      const geocoded = form.address ? await geocodeMalaysiaAddress(form.address) : null;
+
       const { error: orgError } = await supabase.from('organizations').insert({
         owner_profile_id: receiverId,
         name: form.organizationName,
@@ -167,6 +170,9 @@ export function ReceiverVerification() {
         contact_email: form.contactEmail || form.email,
         contact_phone: form.contactPhone || null,
         address: form.address || null,
+        location_name: geocoded?.locationName ?? null,
+        latitude: geocoded?.latitude ?? null,
+        longitude: geocoded?.longitude ?? null,
         verification_status: 'pending',
       });
 
