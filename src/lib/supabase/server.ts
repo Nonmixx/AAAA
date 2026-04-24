@@ -25,3 +25,13 @@ export async function getSupabaseServerClient() {
     },
   });
 }
+
+/** Same as {@link getSupabaseServerClient} but returns null when env is missing (e.g. demo-only dev). */
+export async function getSupabaseServerClientOrNull() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return null;
+  }
+  return getSupabaseServerClient();
+}

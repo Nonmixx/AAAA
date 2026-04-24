@@ -1,3 +1,5 @@
+'use client';
+
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Building2, MapPin, Package, AlertCircle, Zap, ImageIcon } from 'lucide-react';
@@ -170,7 +172,7 @@ export function ReceiverNeedsList() {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl mb-2 text-[#000000] font-bold">Organizations in Need</h1>
-        <p className="text-gray-600">Browse live receiver needs from approved organizations in Supabase</p>
+        <p className="text-gray-600">Browse live receiver needs from Supabase</p>
       </div>
 
       {emergencyMode && (
