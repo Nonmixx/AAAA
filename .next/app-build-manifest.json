@@ -95,6 +95,26 @@
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/corporate/(authenticated)/dashboard/page.js"
+    ],
+    "/donor/(authenticated)/needs/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/donor/(authenticated)/needs/page.js"
+    ],
+    "/donor/(authenticated)/profile/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/donor/(authenticated)/profile/page.js"
+    ],
+    "/donor/(authenticated)/needs/[id]/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/donor/(authenticated)/needs/[id]/page.js"
+    ],
+    "/donor/(authenticated)/donate/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/donor/(authenticated)/donate/page.js"
     ]
   }
 }

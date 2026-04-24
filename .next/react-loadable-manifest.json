@@ -5,6 +5,18 @@
       "static/chunks/_app-pages-browser_node_modules_pnpm_next_15_1_6_react-dom_18_3_1_react_18_3_1__react_18_3_1_-b76dc0.js"
     ]
   },
+  "..\\node_modules\\.pnpm\\next@15.1.6_react-dom@18.3.1_react@18.3.1__react@18.3.1\\node_modules\\next\\dist\\client\\index.js -> ../pages/_app": {
+    "id": "..\\node_modules\\.pnpm\\next@15.1.6_react-dom@18.3.1_react@18.3.1__react@18.3.1\\node_modules\\next\\dist\\client\\index.js -> ../pages/_app",
+    "files": [
+      "static/chunks/node_modules_pnpm_next_15_1_6_react-dom_18_3_1_react_18_3_1__react_18_3_1_node_modules_next_d-64b5ee.js"
+    ]
+  },
+  "..\\node_modules\\.pnpm\\next@15.1.6_react-dom@18.3.1_react@18.3.1__react@18.3.1\\node_modules\\next\\dist\\client\\index.js -> ../pages/_error": {
+    "id": "..\\node_modules\\.pnpm\\next@15.1.6_react-dom@18.3.1_react@18.3.1__react@18.3.1\\node_modules\\next\\dist\\client\\index.js -> ../pages/_error",
+    "files": [
+      "static/chunks/node_modules_pnpm_next_15_1_6_react-dom_18_3_1_react_18_3_1__react_18_3_1_node_modules_next_d-d614f9.js"
+    ]
+  },
   "app\\(auth)\\receiver-verification\\page.tsx -> ../../pages/auth/ReceiverVerification": {
     "id": "app\\(auth)\\receiver-verification\\page.tsx -> ../../pages/auth/ReceiverVerification",
     "files": [
@@ -21,6 +33,30 @@
     "id": "app\\donor\\(authenticated)\\dashboard\\page.tsx -> ../../../pages/donor/DonorDashboard",
     "files": [
       "static/chunks/_app-pages-browser_src_app_pages_donor_DonorDashboard_tsx.js"
+    ]
+  },
+  "app\\donor\\(authenticated)\\donate\\page.tsx -> ../../../pages/donor/AIDonation": {
+    "id": "app\\donor\\(authenticated)\\donate\\page.tsx -> ../../../pages/donor/AIDonation",
+    "files": [
+      "static/chunks/_app-pages-browser_src_app_pages_donor_AIDonation_tsx.js"
+    ]
+  },
+  "app\\donor\\(authenticated)\\needs\\[id]\\page.tsx -> ../../../../pages/donor/ReceiverDetail": {
+    "id": "app\\donor\\(authenticated)\\needs\\[id]\\page.tsx -> ../../../../pages/donor/ReceiverDetail",
+    "files": [
+      "static/chunks/_app-pages-browser_src_app_pages_donor_ReceiverDetail_tsx.js"
+    ]
+  },
+  "app\\donor\\(authenticated)\\needs\\page.tsx -> ../../../pages/donor/ReceiverNeedsList": {
+    "id": "app\\donor\\(authenticated)\\needs\\page.tsx -> ../../../pages/donor/ReceiverNeedsList",
+    "files": [
+      "static/chunks/_app-pages-browser_src_app_pages_donor_ReceiverNeedsList_tsx.js"
+    ]
+  },
+  "app\\donor\\(authenticated)\\profile\\page.tsx -> ../../../pages/donor/DonorProfile": {
+    "id": "app\\donor\\(authenticated)\\profile\\page.tsx -> ../../../pages/donor/DonorProfile",
+    "files": [
+      "static/chunks/_app-pages-browser_src_app_pages_donor_DonorProfile_tsx.js"
     ]
   },
   "app\\receiver\\create-needs\\page.tsx -> ../../pages/receiver/CreateNeeds": {
