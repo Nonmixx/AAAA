@@ -7,6 +7,13 @@ type ProfileForm = {
   phone: string;
 };
 
+type ProfileRow = {
+  id: string;
+  full_name: string;
+  phone: string | null;
+  role: 'donor' | 'receiver' | 'corporate' | 'admin';
+};
+
 type DonationHistoryRow = {
   id: string;
   item_name: string;
@@ -71,9 +78,11 @@ function getStatusBadge(status: string) {
 
 export function DonorProfile() {
   const [profileId, setProfileId] = useState<string | null>(null);
+  const [profileRole, setProfileRole] = useState<ProfileRow['role']>('donor');
   const [email, setEmail] = useState('');
   const [form, setForm] = useState<ProfileForm>({ fullName: '', phone: '' });
   const [donationHistory, setDonationHistory] = useState<DonationHistoryRow[]>([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -97,28 +106,37 @@ export function DonorProfile() {
         setProfileId(user.id);
         setEmail(user.email ?? '');
 
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, full_name, phone')
-          .eq('id', user.id)
-          .maybeSingle();
+        const [{ data: profile, error: profileError }, { data: donations, error: donationsError }, { count: unreadCount, error: notificationsError }] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('id, full_name, phone, role')
+            .eq('id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('donations')
+            .select('id, item_name, quantity_total, status, created_at, donation_allocations(need_id, needs(organizations(name)))')
+            .eq('donor_profile_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(6),
+          supabase
+            .from('notifications')
+            .select('id', { count: 'exact', head: true })
+            .eq('profile_id', user.id)
+            .eq('is_read', false),
+        ]);
 
         if (profileError) throw profileError;
-
-        setForm({
-          fullName: profile?.full_name ?? user.user_metadata?.full_name ?? '',
-          phone: profile?.phone ?? '',
-        });
-
-        const { data: donations, error: donationsError } = await supabase
-          .from('donations')
-          .select('id, item_name, quantity_total, status, created_at, donation_allocations(need_id, needs(organizations(name)))')
-          .eq('donor_profile_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(6);
-
         if (donationsError) throw donationsError;
+        if (notificationsError) throw notificationsError;
+
+        const profileRecord = profile as ProfileRow | null;
+        setProfileRole(profileRecord?.role ?? 'donor');
+        setForm({
+          fullName: profileRecord?.full_name ?? user.user_metadata?.full_name ?? '',
+          phone: profileRecord?.phone ?? '',
+        });
         setDonationHistory((donations ?? []) as DonationHistoryRow[]);
+        setUnreadNotifications(unreadCount ?? 0);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load donor profile.');
       } finally {
@@ -328,11 +346,15 @@ export function DonorProfile() {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm text-gray-600">Role</span>
-                <span className="font-medium text-[#000000]">Donor</span>
+                <span className="font-medium text-[#000000]">{profileRole.charAt(0).toUpperCase() + profileRole.slice(1)}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm text-gray-600">Login Email</span>
                 <span className="font-medium text-[#000000] text-right break-all">{email || '-'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Unread Notifications</span>
+                <span className="font-medium text-[#000000]">{loading ? '-' : unreadNotifications}</span>
               </div>
             </div>
           </div>

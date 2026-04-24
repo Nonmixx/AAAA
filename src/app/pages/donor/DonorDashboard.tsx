@@ -20,44 +20,12 @@ import {
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { useDonorContext } from '../../context/DonorContext';
 
-const stats = [
-  { label: 'Total Donations', value: '24', icon: Package, color: 'bg-[#da1a32]' },
-  { label: 'Items Donated', value: '1,250', icon: Heart, color: 'bg-[#000000]' },
-  { label: 'Orgs Helped', value: '12', icon: Users, color: 'bg-[#da1a32]' },
-  { label: 'Success Rate', value: '96%', icon: TrendingUp, color: 'bg-[#000000]' },
-];
-
-const recentDonations = [
-  {
-    id: 'DON-001',
-    item: 'Food Packs',
-    quantity: 100,
-    org: 'Hope Orphanage',
-    status: 'delivered',
-    date: 'Apr 16, 2026',
-  },
-  {
-    id: 'DON-002',
-    item: 'Blankets',
-    quantity: 50,
-    org: 'Care Foundation',
-    status: 'in-transit',
-    date: 'Apr 18, 2026',
-  },
-  {
-    id: 'DON-003',
-    item: 'School Supplies',
-    quantity: 75,
-    org: 'Hope Orphanage',
-    status: 'scheduled',
-    date: 'Apr 19, 2026',
-  },
-];
-
 const statusConfig: Record<string, { label: string; color: string; icon: React.ElementType }> = {
-  scheduled: { label: 'Scheduled', color: 'bg-[#edf2f4] text-[#000000] border-[#e5e5e5]', icon: Clock },
-  'in-transit': { label: 'In Transit', color: 'bg-yellow-50 text-yellow-600 border-yellow-100', icon: Truck },
-  delivered: { label: 'Delivered', color: 'bg-green-50 text-green-600 border-green-100', icon: CheckCircle2 },
+  draft: { label: 'Draft', color: 'bg-gray-50 text-gray-600 border-gray-200', icon: Clock },
+  matching: { label: 'Matching', color: 'bg-blue-50 text-blue-700 border-blue-100', icon: Sparkles },
+  allocated: { label: 'Allocated', color: 'bg-yellow-50 text-yellow-600 border-yellow-100', icon: Truck },
+  completed: { label: 'Completed', color: 'bg-green-50 text-green-600 border-green-100', icon: CheckCircle2 },
+  cancelled: { label: 'Cancelled', color: 'bg-gray-50 text-gray-600 border-gray-200', icon: AlertCircle },
 };
 
 type NeedOrganization = {
@@ -78,9 +46,62 @@ type NeedRecord = {
   organizations: NeedOrganization | NeedOrganization[] | null;
 };
 
+type DashboardDonationRow = {
+  id: string;
+  item_name: string;
+  quantity_total: number;
+  status: 'draft' | 'matching' | 'allocated' | 'completed' | 'cancelled';
+  created_at: string;
+  donation_allocations:
+    | {
+        status: string;
+        needs:
+          | {
+              organizations:
+                | {
+                    name: string;
+                  }
+                | {
+                    name: string;
+                  }[]
+                | null;
+            }
+          | {
+              organizations:
+                | {
+                    name: string;
+                  }
+                | {
+                    name: string;
+                  }[]
+                | null;
+            }[]
+          | null;
+      }[]
+    | null;
+};
+
+type DonorProfileRow = {
+  id: string;
+  full_name: string;
+  role: 'donor' | 'receiver' | 'corporate' | 'admin';
+};
+
 function getOrganizationRecord(organization: NeedRecord['organizations']) {
   if (Array.isArray(organization)) return organization[0] ?? null;
   return organization;
+}
+
+function getDonationOrganizations(donation: DashboardDonationRow) {
+  const names = (donation.donation_allocations ?? [])
+    .map((allocation) => {
+      const needRecord = Array.isArray(allocation.needs) ? allocation.needs[0] : allocation.needs;
+      const orgRecord = Array.isArray(needRecord?.organizations) ? needRecord.organizations[0] : needRecord?.organizations;
+      return orgRecord?.name ?? null;
+    })
+    .filter(Boolean) as string[];
+
+  return [...new Set(names)];
 }
 
 function getLocationLabel(address?: string | null) {
@@ -121,10 +142,54 @@ const quickActions = [
 
 export function DonorDashboard() {
   const { emergencyMode } = useDonorContext();
+  const [profile, setProfile] = useState<DonorProfileRow | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [recentDonations, setRecentDonations] = useState<DashboardDonationRow[]>([]);
   const [urgentNeeds, setUrgentNeeds] = useState<NeedRecord[]>([]);
   const [urgentNeedsLoading, setUrgentNeedsLoading] = useState(true);
 
   useEffect(() => {
+    const loadDashboardData = async () => {
+      setDashboardLoading(true);
+      setDashboardError(null);
+
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError) throw userError;
+        if (!user) throw new Error('Please log in to view your donor dashboard.');
+
+        const [{ data: profileData, error: profileError }, { data: donationsData, error: donationsError }] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('id, full_name, role')
+            .eq('id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('donations')
+            .select('id, item_name, quantity_total, status, created_at, donation_allocations(status, needs(organizations(name)))')
+            .eq('donor_profile_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(5),
+        ]);
+
+        if (profileError) throw profileError;
+        if (donationsError) throw donationsError;
+
+        setProfile((profileData as DonorProfileRow | null) ?? null);
+        setRecentDonations((donationsData ?? []) as DashboardDonationRow[]);
+      } catch (err) {
+        setDashboardError(err instanceof Error ? err.message : 'Unable to load donor dashboard.');
+      } finally {
+        setDashboardLoading(false);
+      }
+    };
+
     const loadUrgentNeeds = async () => {
       setUrgentNeedsLoading(true);
 
@@ -145,8 +210,37 @@ export function DonorDashboard() {
       }
     };
 
+    void loadDashboardData();
     void loadUrgentNeeds();
   }, []);
+
+  const donationStats = useMemo(() => {
+    const totalDonations = recentDonations.length;
+    const totalItems = recentDonations.reduce((sum, donation) => sum + (donation.quantity_total ?? 0), 0);
+    const organizationsHelped = new Set(recentDonations.flatMap((donation) => getDonationOrganizations(donation))).size;
+    const completedDonations = recentDonations.filter((donation) => donation.status === 'completed').length;
+    const successRate = totalDonations === 0 ? '0%' : `${Math.round((completedDonations / totalDonations) * 100)}%`;
+
+    return [
+      { label: 'Total Donations', value: dashboardLoading ? '-' : String(totalDonations), icon: Package, color: 'bg-[#da1a32]' },
+      { label: 'Items Donated', value: dashboardLoading ? '-' : totalItems.toLocaleString('en-MY'), icon: Heart, color: 'bg-[#000000]' },
+      { label: 'Orgs Helped', value: dashboardLoading ? '-' : String(organizationsHelped), icon: Users, color: 'bg-[#da1a32]' },
+      { label: 'Success Rate', value: dashboardLoading ? '-' : successRate, icon: TrendingUp, color: 'bg-[#000000]' },
+    ];
+  }, [dashboardLoading, recentDonations]);
+
+  const latestDonationImpact = useMemo(() => {
+    const latestDonation = recentDonations[0];
+    if (!latestDonation) return null;
+
+    const organizations = getDonationOrganizations(latestDonation);
+    return {
+      item: latestDonation.item_name,
+      quantity: latestDonation.quantity_total,
+      organization: organizations[0] ?? 'an organization in need',
+      peopleHelped: Math.max(1, Math.min(30, latestDonation.quantity_total)),
+    };
+  }, [recentDonations]);
 
   const displayedUrgentNeeds = useMemo(() => {
     const visible = urgentNeeds.filter((need) => {
@@ -165,24 +259,20 @@ export function DonorDashboard() {
       return urgencyRank[b.urgency] - urgencyRank[a.urgency];
     });
 
-    if (emergencyMode) {
-      return sorted.slice(0, 3);
-    }
-
+    if (emergencyMode) return sorted.slice(0, 3);
     return sorted.filter((need) => need.urgency === 'high' || getOrganizationRecord(need.organizations)?.is_emergency).slice(0, 3);
   }, [emergencyMode, urgentNeeds]);
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Welcome Banner */}
       <div className="bg-[#000000] text-white">
         <div className="max-w-7xl mx-auto px-6 py-10">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
             <div>
-              <p className="text-[#da1a32] text-sm font-medium mb-1">Welcome back 👋</p>
-              <h1 className="text-3xl font-bold mb-2">Sarah Johnson</h1>
+              <p className="text-[#da1a32] text-sm font-medium mb-1">Welcome back</p>
+              <h1 className="text-3xl font-bold mb-2">{profile?.full_name ?? 'Donor'}</h1>
               <p className="text-white opacity-70">
-                You've made a difference to <span className="text-white font-medium opacity-100">12 organizations</span> so far. Keep it up!
+                You&apos;ve made a difference to <span className="text-white font-medium opacity-100">{donationStats[2].value} organizations</span> so far. Keep it up!
               </p>
             </div>
             <Link href="/donor/donate">
@@ -196,9 +286,14 @@ export function DonorDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-10 space-y-10">
-        {/* Stats */}
+        {dashboardError && (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {dashboardError}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-          {stats.map((stat, i) => {
+          {donationStats.map((stat, i) => {
             const Icon = stat.icon;
             return (
               <div
@@ -215,7 +310,6 @@ export function DonorDashboard() {
           })}
         </div>
 
-        {/* Quick Actions */}
         <div>
           <h2 className="text-xl font-bold text-[#000000] mb-4">Quick Actions</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -237,7 +331,6 @@ export function DonorDashboard() {
         </div>
 
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* Recent Donations */}
           <div className="lg:col-span-2">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-[#000000]">Recent Donations</h2>
@@ -246,9 +339,23 @@ export function DonorDashboard() {
               </Link>
             </div>
             <div className="space-y-4">
+              {!dashboardLoading && recentDonations.length === 0 && (
+                <div className="bg-white border-2 border-[#e5e5e5] rounded-2xl p-5 text-sm text-gray-500">
+                  No donations recorded yet.
+                </div>
+              )}
+
               {recentDonations.map((donation) => {
-                const config = statusConfig[donation.status];
+                const config = statusConfig[donation.status] ?? statusConfig.draft;
                 const StatusIcon = config.icon;
+                const organizations = getDonationOrganizations(donation);
+                const organizationLabel =
+                  organizations.length === 0
+                    ? 'No allocation yet'
+                    : organizations.length === 1
+                      ? organizations[0]
+                      : 'Multiple organizations';
+
                 return (
                   <div
                     key={donation.id}
@@ -260,11 +367,13 @@ export function DonorDashboard() {
                           <Package className="w-6 h-6 text-white" />
                         </div>
                         <div>
-                          <div className="font-bold text-[#000000]">{donation.item}</div>
+                          <div className="font-bold text-[#000000]">{donation.item_name}</div>
                           <div className="text-sm text-gray-500">
-                            {donation.quantity} units → {donation.org}
+                            {donation.quantity_total} units to {organizationLabel}
                           </div>
-                          <div className="text-xs text-gray-400 mt-0.5">{donation.date} • #{donation.id}</div>
+                          <div className="text-xs text-gray-400 mt-0.5">
+                            {new Date(donation.created_at).toLocaleDateString('en-GB')} • #{donation.id.slice(0, 8)}
+                          </div>
                         </div>
                       </div>
                       <span
@@ -280,7 +389,6 @@ export function DonorDashboard() {
             </div>
           </div>
 
-          {/* Urgent Needs */}
           <div className="lg:col-span-1">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-[#000000]">Urgent Needs</h2>
@@ -344,12 +452,11 @@ export function DonorDashboard() {
               })}
             </div>
 
-            {/* Impact Card */}
             <div className="mt-6 bg-gradient-to-br from-[#da1a32] to-[#b01528] rounded-2xl p-6 text-white shadow-lg">
               <Heart className="w-10 h-10 mb-3" fill="white" />
               <h3 className="font-bold text-lg mb-1">Your Impact</h3>
               <p className="text-white opacity-80 text-sm mb-4">
-                You've helped <strong className="opacity-100">1,250 people</strong> through your generous contributions.
+                You&apos;ve donated <strong className="opacity-100">{donationStats[1].value} items</strong> across <strong className="opacity-100">{donationStats[2].value} organizations</strong>.
               </p>
               <Link href="/donor/profile">
                 <button className="w-full bg-white text-[#da1a32] py-2.5 rounded-xl text-sm font-medium hover:bg-[#edf2f4] transition-all">
@@ -358,23 +465,30 @@ export function DonorDashboard() {
               </Link>
             </div>
 
-            {/* Impact Visualization Card */}
             <div className="mt-4 bg-white border-2 border-[#e5e5e5] rounded-2xl p-5 hover:border-[#da1a32] transition-all">
               <div className="flex items-center gap-2 mb-3">
                 <Baby className="w-5 h-5 text-[#da1a32]" />
                 <h3 className="font-bold text-[#000000] text-sm">Latest Impact</h3>
               </div>
-              <p className="text-sm text-gray-600 mb-3">
-                Your last donation of <strong className="text-[#000000]">100 Food Packs</strong> helped:
-              </p>
-              <div className="flex flex-wrap gap-1 mb-3">
-                {Array.from({ length: 30 }).map((_, i) => (
-                  <Smile key={i} className="w-4 h-4 text-[#da1a32]" />
-                ))}
-              </div>
-              <p className="text-xs text-gray-500">
-                <span className="font-bold text-[#000000] text-sm">30 children</span> at Hope Orphanage were fed
-              </p>
+              {latestDonationImpact ? (
+                <>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Your last donation of <strong className="text-[#000000]">{latestDonationImpact.quantity} {latestDonationImpact.item}</strong> helped:
+                  </p>
+                  <div className="flex flex-wrap gap-1 mb-3">
+                    {Array.from({ length: latestDonationImpact.peopleHelped }).map((_, i) => (
+                      <Smile key={i} className="w-4 h-4 text-[#da1a32]" />
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    <span className="font-bold text-[#000000] text-sm">{latestDonationImpact.peopleHelped} people</span> at {latestDonationImpact.organization}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-gray-600">
+                  Your impact story will appear here once your first donation is recorded.
+                </p>
+              )}
               <Link href="/donor/tracking">
                 <button className="mt-3 w-full text-xs text-[#da1a32] font-medium hover:text-[#b01528] text-center">
                   See full tracking →
