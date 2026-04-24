@@ -1,7 +1,0 @@
-{
-  "/needs/page": "app/needs/page.js",
-  "/donor/page": "app/donor/page.js",
-  "/receiver/page": "app/receiver/page.js",
-  "/donor/(authenticated)/needs/[id]/page": "app/donor/(authenticated)/needs/[id]/page.js",
-  "/donor/(authenticated)/needs/page": "app/donor/(authenticated)/needs/page.js"
-}
