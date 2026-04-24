@@ -1,74 +1,37 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { User, Mail, Phone, Heart, Package, TrendingUp, MapPin } from 'lucide-react';
+import { User, Mail, Phone, Heart, Package, MapPin } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 
+// --- Improved Types based on schema.sql ---
 type ProfileForm = {
   fullName: string;
   phone: string;
   address: string;
 };
 
-type DonationHistoryRow = {
+type AllocationHistoryRow = {
   id: string;
-  item_name: string;
-  quantity_total: number;
+  allocated_quantity: number;
   status: string;
   created_at: string;
-  donation_allocations:
-    | {
-        need_id: string;
-        needs:
-          | {
-              organizations:
-                | {
-                    name: string;
-                  }
-                | {
-                    name: string;
-                  }[]
-                | null;
-            }
-          | {
-              organizations:
-                | {
-                    name: string;
-                  }
-                | {
-                    name: string;
-                  }[]
-                | null;
-            }[]
-          | null;
-      }[]
-    | null;
+  donations: { item_name: string } | null;
+  needs: { organizations: { name: string } | null } | null;
 };
 
-function getOrganizationNameFromAllocations(row: DonationHistoryRow) {
-  const allocations = row.donation_allocations ?? [];
-  const names = allocations
-    .map((allocation) => {
-      const needRecord = Array.isArray(allocation.needs) ? allocation.needs[0] : allocation.needs;
-      const orgRecord = Array.isArray(needRecord?.organizations) ? needRecord?.organizations[0] : needRecord?.organizations;
-      return orgRecord?.name ?? null;
-    })
-    .filter(Boolean) as string[];
-
-  const uniqueNames = [...new Set(names)];
-  if (uniqueNames.length === 0) return 'No allocation yet';
-  if (uniqueNames.length === 1) return uniqueNames[0];
-  return 'Multiple Organizations';
-}
-
 function formatDonationStatus(status: string) {
-  return status.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+  return status.replace(/_/g, ' ').replace(/\b\w/g, (char: string) => char.toUpperCase());
 }
 
 function getStatusBadge(status: string) {
-  if (status === 'completed') return 'bg-green-50 text-green-600 border-green-100';
-  if (status === 'allocated' || status === 'matching') return 'bg-yellow-50 text-yellow-600 border-yellow-100';
-  if (status === 'cancelled') return 'bg-gray-50 text-gray-600 border-gray-200';
+  const s = status.toLowerCase();
+  if (['completed', 'delivered', 'confirmed', 'proof_uploaded'].includes(s)) 
+    return 'bg-green-50 text-green-600 border-green-100';
+  if (['allocated', 'matching', 'pending', 'scheduled', 'in_transit'].includes(s)) 
+    return 'bg-yellow-50 text-yellow-600 border-yellow-100';
+  if (s === 'cancelled' || s === 'rejected') 
+    return 'bg-gray-50 text-gray-600 border-gray-200';
   return 'bg-blue-50 text-blue-700 border-blue-100';
 }
 
@@ -76,7 +39,11 @@ export function DonorProfile() {
   const [profileId, setProfileId] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [form, setForm] = useState<ProfileForm>({ fullName: '', phone: '', address: '' });
-  const [donationHistory, setDonationHistory] = useState<DonationHistoryRow[]>([]);
+  const [donationHistory, setDonationHistory] = useState<AllocationHistoryRow[]>([]);
+  
+  // New State for correct calculations
+  const [stats, setStats] = useState({ totalDonations: 0, totalItems: 0, orgsHelped: 0 });
+  
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -89,10 +56,7 @@ export function DonorProfile() {
 
       try {
         const supabase = getSupabaseBrowserClient();
-        const {
-          data: { user },
-          error: userError,
-        } = await supabase.auth.getUser();
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
 
         if (userError) throw userError;
         if (!user) throw new Error('Please log in to view your donor profile.');
@@ -100,27 +64,44 @@ export function DonorProfile() {
         setProfileId(user.id);
         setEmail(user.email ?? '');
 
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, full_name, phone, address')
-          .eq('id', user.id)
-          .maybeSingle();
-        if (profileError) throw profileError;
+        // Fetch Profile & Total Stats & Allocations in parallel for efficiency
+        const [profileRes, totalDonationsRes, allocationsRes] = await Promise.all([
+          supabase.from('profiles').select('id, full_name, phone, address').eq('id', user.id).maybeSingle(),
+          supabase.from('donations').select('quantity_total').eq('donor_profile_id', user.id),
+          supabase.from('donation_allocations').select(`
+            id, allocated_quantity, status, created_at,
+            donations(item_name),
+            needs(organizations(name))
+          `)
+          .eq('donations.donor_profile_id', user.id)
+          .order('created_at', { ascending: false })
+        ]);
 
+        if (profileRes.error) throw profileRes.error;
+        
+        // Set Form Data
         setForm({
-          fullName: profile?.full_name ?? user.user_metadata?.full_name ?? '',
-          phone: profile?.phone ?? '',
-          address: profile?.address ?? '',
+          fullName: profileRes.data?.full_name ?? user.user_metadata?.full_name ?? '',
+          phone: profileRes.data?.phone ?? '',
+          address: profileRes.data?.address ?? '',
         });
 
-        const { data: donations, error: donationsError } = await supabase
-          .from('donations')
-          .select('id, item_name, quantity_total, status, created_at, donation_allocations(need_id, needs(organizations(name)))')
-          .eq('donor_profile_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(6);
-        if (donationsError) throw donationsError;
-        setDonationHistory((donations ?? []) as DonationHistoryRow[]);
+        // Total Donations = All rows in 'donations' table
+        const totalDonations = totalDonationsRes.data?.length ?? 0;
+        // Total Items = Sum of 'quantity_total' in 'donations' table
+        const totalItems = totalDonationsRes.data?.reduce((sum, d) => sum + (d.quantity_total ?? 0), 0) ?? 0;
+        // Orgs Helped = Unique organizations in the 'allocations' list
+        const uniqueOrgs = new Set(
+          (allocationsRes.data ?? [])
+            .map(a => a.needs?.organizations?.name)
+            .filter(Boolean)
+        ).size;
+
+        setStats({ totalDonations, totalItems, orgsHelped: uniqueOrgs });
+
+        // Set History (Limit to 6 for the UI)
+        setDonationHistory((allocationsRes.data ?? []).slice(0, 6) as unknown as AllocationHistoryRow[]);
+
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load donor profile.');
       } finally {
@@ -131,28 +112,8 @@ export function DonorProfile() {
     void loadProfile();
   }, []);
 
-  const impact = useMemo(() => {
-    const totalDonations = donationHistory.length;
-    const totalItems = donationHistory.reduce((sum, row) => sum + (row.quantity_total ?? 0), 0);
-    const organizationsHelped = new Set(
-      donationHistory.flatMap((row) => {
-        const allocations = row.donation_allocations ?? [];
-        return allocations
-          .map((allocation) => {
-            const needRecord = Array.isArray(allocation.needs) ? allocation.needs[0] : allocation.needs;
-            const orgRecord = Array.isArray(needRecord?.organizations) ? needRecord?.organizations[0] : needRecord?.organizations;
-            return orgRecord?.name ?? null;
-          })
-          .filter(Boolean) as string[];
-      }),
-    ).size;
-
-    return { totalDonations, totalItems, organizationsHelped };
-  }, [donationHistory]);
-
   const handleSave = async () => {
     if (!profileId) return;
-
     setSaving(true);
     setErrorMessage(null);
     setSuccessMessage(null);
@@ -169,9 +130,7 @@ export function DonorProfile() {
       if (error) throw error;
 
       setSuccessMessage('Profile updated successfully.');
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new Event('donor-profile-updated'));
-      }
+      window.dispatchEvent(new Event('donor-profile-updated'));
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to save donor profile.');
     } finally {
@@ -265,11 +224,11 @@ export function DonorProfile() {
           </div>
 
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
-            <h2 className="text-xl mb-6 text-[#000000] font-bold">Donation History</h2>
+            <h2 className="text-xl mb-6 text-[#000000] font-bold">Recent History</h2>
             <div className="space-y-4">
               {!loading && donationHistory.length === 0 ? (
                 <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4] px-4 py-6 text-sm text-gray-600">
-                  No donations recorded yet.
+                  No allocations recorded yet.
                 </div>
               ) : null}
 
@@ -280,10 +239,10 @@ export function DonorProfile() {
                   </div>
                   <div className="flex-1">
                     <div className="font-medium text-[#000000]">
-                      {donation.quantity_total} {donation.item_name}
+                      {donation.allocated_quantity} {donation.donations?.item_name ?? 'Donation'}
                     </div>
                     <div className="text-sm text-gray-600">
-                      {getOrganizationNameFromAllocations(donation)} • {new Date(donation.created_at).toLocaleDateString('en-GB')}
+                      {donation.needs?.organizations?.name ?? 'Unknown Org'} • {new Date(donation.created_at).toLocaleDateString('en-GB')}
                     </div>
                   </div>
                   <div className={`px-3 py-1 text-xs rounded-full border font-medium ${getStatusBadge(donation.status)}`}>
@@ -298,18 +257,18 @@ export function DonorProfile() {
         <div className="lg:col-span-1 space-y-6">
           <div className="bg-gradient-to-br from-[#da1a32] to-[#b01528] rounded-2xl p-6 text-white shadow-lg">
             <Heart className="w-12 h-12 mb-4" fill="white" />
-            <h3 className="text-xl mb-4 font-bold">Your Impact</h3>
+            <h3 className="text-xl mb-4 font-bold">Your Total Impact</h3>
             <div className="space-y-4">
               <div>
-                <div className="text-3xl mb-1 font-bold">{loading ? '-' : impact.totalDonations}</div>
-                <div className="text-sm text-white opacity-80">Recent Donations Loaded</div>
+                <div className="text-3xl mb-1 font-bold">{loading ? '-' : stats.totalDonations}</div>
+                <div className="text-sm text-white opacity-80">Total Donations Made</div>
               </div>
               <div>
-                <div className="text-3xl mb-1 font-bold">{loading ? '-' : impact.totalItems}</div>
-                <div className="text-sm text-white opacity-80">Items Donated</div>
+                <div className="text-3xl mb-1 font-bold">{loading ? '-' : stats.totalItems.toLocaleString()}</div>
+                <div className="text-sm text-white opacity-80">Total Items Donated</div>
               </div>
               <div>
-                <div className="text-3xl mb-1 font-bold">{loading ? '-' : impact.organizationsHelped}</div>
+                <div className="text-3xl mb-1 font-bold">{loading ? '-' : stats.orgsHelped}</div>
                 <div className="text-sm text-white opacity-80">Organizations Helped</div>
               </div>
             </div>
@@ -317,7 +276,6 @@ export function DonorProfile() {
 
           <div className="bg-white rounded-2xl p-6 border-2 border-[#e5e5e5] shadow-sm">
             <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="w-5 h-5 text-[#da1a32]" />
               <h3 className="text-lg text-[#000000] font-bold">Account Summary</h3>
             </div>
             <div className="space-y-3">

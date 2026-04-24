@@ -15,7 +15,6 @@ const NOTIF_PREFS: { key: (typeof DONOR_NOTIFICATION_KEYS)[number]; label: strin
   { key: 'allocationCompleted', label: 'Allocation Completed', desc: 'When your donation has been AI-matched and allocated' },
   { key: 'deliveryScheduled', label: 'Delivery Scheduled', desc: 'When delivery is confirmed and scheduled' },
   { key: 'itemDelivered', label: 'Item Delivered', desc: 'When your donation has been delivered' },
-  { key: 'proofOfDelivery', label: 'Proof of Delivery', desc: 'When a proof photo is uploaded by receiver' },
   { key: 'emergencyAlerts', label: 'Emergency Mode Alerts', desc: 'When the system activates Emergency Mode' },
 ];
 
@@ -134,7 +133,7 @@ export function DonorSettings() {
                   >
                     <AlertTriangle className="w-4 h-4" />
                     {emergencyMode
-                      ? 'Emergency Mode is ACTIVE — receivers are prioritised'
+                      ? 'Emergency Mode is ACTIVE — urgent needs are prioritised'
                       : 'Emergency Mode is OFF — showing normal view'}
                   </div>
                 </div>
@@ -160,7 +159,7 @@ export function DonorSettings() {
                   <div className="flex items-start gap-3">
                     <AlertTriangle className="w-5 h-5 text-[#da1a32] mt-0.5 flex-shrink-0" />
                     <div>
-                      <p className="font-bold text-[#da1a32] mb-2">🚨 Emergency Mode is Active</p>
+                      <p className="font-bold text-[#da1a32] mb-2">Emergency Mode is Active</p>
                       <ul className="text-sm text-red-700 space-y-1.5">
                         <li>• Urgent receivers are highlighted and sorted to the top of the list</li>
                         <li>• Emergency badges are shown on all disaster-affected organisations</li>
@@ -184,7 +183,7 @@ export function DonorSettings() {
             <div className="p-8">
               <p className="text-sm text-gray-500 mb-2">
                 Choose which events trigger notifications to stay informed about your donations. Changes are saved to your
-                Supabase account and kept after you log out and back in.
+                account and kept after you log out and back in.
               </p>
               {prefsLoading ? <p className="text-sm text-gray-500 mb-6">Loading your preferences…</p> : null}
               {notifSaveError ? (
