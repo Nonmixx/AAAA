@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Building2, Mail, Phone, MapPin, FileText, CheckCircle2, Clock, XCircle } from 'lucide-react';
+import { Building2, Mail, Phone, MapPin, FileText, CheckCircle2, Clock, XCircle, ImagePlus, X } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { getCurrentReceiverContext } from '@/lib/supabase/receiver';
+import { uploadPublicImage } from '@/lib/supabase/media';
 
 type VerificationStatus = 'pending' | 'approved' | 'rejected';
 
 type Organization = {
   id: string;
   name: string;
+  logo_url: string | null;
   registration_number: string;
   contact_email: string;
   contact_phone: string | null;
@@ -32,6 +34,8 @@ export function ReceiverProfile() {
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [docForm, setDocForm] = useState({
     documentType: '',
     fileName: '',
@@ -47,6 +51,7 @@ export function ReceiverProfile() {
         const supabase = getSupabaseBrowserClient();
         const context = await getCurrentReceiverContext();
         setOrganization(context.organization as Organization);
+        setLogoPreview(context.organization.logo_url ?? null);
 
         const { data: docs, error: docsError } = await supabase
           .from('organization_documents')
@@ -65,6 +70,13 @@ export function ReceiverProfile() {
 
     void loadProfile();
   }, []);
+
+  useEffect(() => {
+    if (!logoFile) return;
+    const objectUrl = URL.createObjectURL(logoFile);
+    setLogoPreview(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [logoFile]);
 
   const statusConfig = {
     pending: {
@@ -95,6 +107,31 @@ export function ReceiverProfile() {
     setOrganization({ ...organization, [field]: value });
   };
 
+  const onLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (!file) {
+      setLogoFile(null);
+      setLogoPreview(organization?.logo_url ?? null);
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage('Please choose an image file for the organization logo.');
+      e.target.value = '';
+      return;
+    }
+
+    setErrorMessage(null);
+    setLogoFile(file);
+  };
+
+  const removeLogo = () => {
+    setLogoFile(null);
+    setLogoPreview(null);
+    if (!organization) return;
+    setOrganization({ ...organization, logo_url: null });
+  };
+
   const saveProfile = async () => {
     if (!organization) return;
 
@@ -104,10 +141,17 @@ export function ReceiverProfile() {
 
     try {
       const supabase = getSupabaseBrowserClient();
+      let logoUrl = organization.logo_url;
+
+      if (logoFile) {
+        logoUrl = await uploadPublicImage(logoFile, `organizations/${organization.id}`);
+      }
+
       const { error } = await supabase
         .from('organizations')
         .update({
           name: organization.name,
+          logo_url: logoUrl,
           registration_number: organization.registration_number,
           contact_email: organization.contact_email,
           contact_phone: organization.contact_phone,
@@ -117,6 +161,10 @@ export function ReceiverProfile() {
         .eq('id', organization.id);
 
       if (error) throw error;
+
+      setOrganization({ ...organization, logo_url: logoUrl });
+      setLogoFile(null);
+      setLogoPreview(logoUrl ?? null);
       setSuccessMessage('Organization profile updated successfully.');
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to save profile.');
@@ -193,6 +241,45 @@ export function ReceiverProfile() {
               <div className="text-sm text-gray-500">Loading organization profile...</div>
             ) : (
               <div className="space-y-4">
+                <div>
+                  <label className="block text-sm mb-2 text-[#000000] font-medium">Organization Logo</label>
+                  <div className="rounded-2xl border-2 border-dashed border-[#e5e5e5] bg-[#edf2f4]/50 p-5">
+                    {logoPreview ? (
+                      <div className="relative overflow-hidden rounded-xl border border-[#e5e5e5] bg-white p-4">
+                        <img src={logoPreview} alt="Organization logo preview" className="h-28 w-28 rounded-xl object-cover" />
+                        <button
+                          type="button"
+                          onClick={removeLogo}
+                          className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/70 text-white transition-colors hover:bg-black"
+                          aria-label="Remove logo"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-white bg-white px-6 py-10 text-center transition-colors hover:border-[#da1a32]">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#da1a32] text-white">
+                          <ImagePlus className="h-6 w-6" />
+                        </div>
+                        <div>
+                          <p className="font-medium text-[#000000]">Add your organization logo</p>
+                          <p className="mt-1 text-sm text-gray-600">This will be used as the fallback image on public need listings when a need photo is missing.</p>
+                        </div>
+                        <span className="rounded-lg border border-[#e5e5e5] px-4 py-2 text-sm font-medium text-[#000000]">
+                          Choose Logo
+                        </span>
+                        <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={onLogoChange} />
+                      </label>
+                    )}
+                    {logoPreview && (
+                      <label className="mt-4 inline-flex cursor-pointer items-center rounded-lg border border-[#e5e5e5] bg-white px-4 py-2 text-sm font-medium text-[#000000] transition-colors hover:border-[#da1a32]">
+                        Replace Logo
+                        <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={onLogoChange} />
+                      </label>
+                    )}
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm mb-2 text-[#000000] font-medium">Organization Name</label>
                   <div className="relative">
@@ -317,7 +404,7 @@ export function ReceiverProfile() {
                   </div>
                   <div className="flex-1">
                     <div className="font-medium text-[#000000]">{doc.document_type}</div>
-                    <div className="text-sm text-gray-600">{doc.file_name} • {new Date(doc.created_at).toLocaleDateString('en-GB')}</div>
+                    <div className="text-sm text-gray-600">{doc.file_name} - {new Date(doc.created_at).toLocaleDateString('en-GB')}</div>
                   </div>
                   <a href={doc.file_url} target="_blank" rel="noreferrer" className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium">
                     View
@@ -348,6 +435,10 @@ export function ReceiverProfile() {
                 <span className="font-medium text-[#000000]">{documents.length}</span>
               </div>
               <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-600">Logo Ready</span>
+                <span className="font-medium text-[#000000]">{organization?.logo_url || logoFile ? 'Yes' : 'No'}</span>
+              </div>
+              <div className="flex justify-between items-center">
                 <span className="text-sm text-gray-600">Member Since</span>
                 <span className="font-medium text-[#000000]">
                   {organization ? new Date(organization.created_at).toLocaleDateString('en-GB') : '-'}
@@ -360,7 +451,7 @@ export function ReceiverProfile() {
             <Building2 className="w-10 h-10 mb-3" />
             <h3 className="text-lg mb-2 font-bold">Need Help?</h3>
             <p className="text-sm text-white opacity-80 mb-4">
-              Contact our support team for assistance with your account
+              Add your logo here after signup so public need cards still look complete even when a specific need photo is missing.
             </p>
             <button className="w-full bg-white text-[#da1a32] py-2 rounded-xl hover:bg-[#edf2f4] transition-all text-sm shadow-sm font-medium">
               Contact Support

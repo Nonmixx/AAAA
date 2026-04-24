@@ -11,6 +11,7 @@ export function ReceiverVerification() {
   const [existingReceiverId, setExistingReceiverId] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -80,6 +81,32 @@ export function ReceiverVerification() {
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+
+  const handleLogout = async () => {
+    if (loggingOut) return;
+
+    setLoggingOut(true);
+    setErrorMessage(null);
+
+    try {
+      const supabase = getSupabaseBrowserClient();
+      await supabase.auth.signOut();
+
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const projectRef = supabaseUrl ? new URL(supabaseUrl).hostname.split('.')[0] : null;
+      if (projectRef) {
+        window.localStorage.removeItem(`sb-${projectRef}-auth-token`);
+        window.sessionStorage.removeItem(`sb-${projectRef}-auth-token`);
+      }
+
+      router.replace('/login');
+      router.refresh();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to log out.');
+    } finally {
+      setLoggingOut(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -319,6 +346,10 @@ export function ReceiverVerification() {
             </div>
           </div>
 
+          <div className="rounded-lg border border-[#e5e5e5] bg-[#edf2f4] px-4 py-3 text-sm text-gray-600">
+            You can add your organization logo after signup from the Receiver Profile page. That keeps verification quick while still giving public need cards a strong fallback image later.
+          </div>
+
           <div className="bg-[#e5e5e5] rounded-lg p-4">
             <h4 className="flex items-center gap-2 text-sm mb-2 text-[#000000] font-medium">
               <FileText className="w-4 h-4 text-[#da1a32]" />
@@ -359,6 +390,16 @@ export function ReceiverVerification() {
           <Link href="/login" className="text-sm text-gray-600 hover:text-[#000000]">
             Back to Login
           </Link>
+        </div>
+        <div className="mt-3 text-center">
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="text-sm text-[#da1a32] hover:text-[#b01528] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loggingOut ? 'Logging out...' : 'Log out and use a different account'}
+          </button>
         </div>
       </div>
     </div>

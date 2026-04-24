@@ -1,7 +1,7 @@
 import { getSupabaseBrowserClient } from './client';
 import { getCurrentReceiverContext } from './receiver';
 
-type AppRole = 'donor' | 'receiver' | 'admin';
+type AppRole = 'donor' | 'receiver' | 'corporate' | 'admin';
 
 export async function ensureSessionAfterSignUp(email: string, password: string) {
   const supabase = getSupabaseBrowserClient();
@@ -78,6 +78,10 @@ export async function resolveAuthenticatedRoute(preferredRole?: AppRole) {
 
   const profile = await ensureProfile({ role: preferredRole });
   const role = profile?.role ?? preferredRole ?? 'donor';
+
+  if (role === 'corporate') {
+    return '/corporate/dashboard';
+  }
 
   if (role === 'receiver' || role === 'admin') {
     try {

@@ -1,8 +1,11 @@
 {
+  "/donor/page": "app/donor/page.js",
+  "/page": "app/page.js",
   "/receiver/page": "app/receiver/page.js",
-  "/receiver/profile/page": "app/receiver/profile/page.js",
-  "/receiver/create-needs/page": "app/receiver/create-needs/page.js",
-  "/receiver/incoming/page": "app/receiver/incoming/page.js",
   "/(auth)/login/page": "app/(auth)/login/page.js",
-  "/(auth)/receiver-verification/page": "app/(auth)/receiver-verification/page.js"
+  "/(auth)/signup/page": "app/(auth)/signup/page.js",
+  "/corporate/(authenticated)/dashboard/page": "app/corporate/(authenticated)/dashboard/page.js",
+  "/donor/(authenticated)/dashboard/page": "app/donor/(authenticated)/dashboard/page.js",
+  "/receiver/create-needs/page": "app/receiver/create-needs/page.js",
+  "/receiver/profile/page": "app/receiver/profile/page.js"
 }

@@ -11,6 +11,18 @@
       "static/chunks/_app-pages-browser_src_app_pages_auth_ReceiverVerification_tsx.js"
     ]
   },
+  "app\\(auth)\\signup\\page.tsx -> ../../pages/auth/SignUp": {
+    "id": "app\\(auth)\\signup\\page.tsx -> ../../pages/auth/SignUp",
+    "files": [
+      "static/chunks/_app-pages-browser_src_app_pages_auth_SignUp_tsx.js"
+    ]
+  },
+  "app\\donor\\(authenticated)\\dashboard\\page.tsx -> ../../../pages/donor/DonorDashboard": {
+    "id": "app\\donor\\(authenticated)\\dashboard\\page.tsx -> ../../../pages/donor/DonorDashboard",
+    "files": [
+      "static/chunks/_app-pages-browser_src_app_pages_donor_DonorDashboard_tsx.js"
+    ]
+  },
   "app\\receiver\\create-needs\\page.tsx -> ../../pages/receiver/CreateNeeds": {
     "id": "app\\receiver\\create-needs\\page.tsx -> ../../pages/receiver/CreateNeeds",
     "files": [
