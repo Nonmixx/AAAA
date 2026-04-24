@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, Lock, Heart } from 'lucide-react';
@@ -32,8 +32,33 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const showRegisteredBanner = searchParams.get('registered') === '1';
+
+  useEffect(() => {
+    let isMounted = true;
+    const redirectAuthenticatedUser = async () => {
+      try {
+        const route = await resolveAuthenticatedRoute();
+        if (route && isMounted) {
+          router.replace(route);
+          return;
+        }
+      } catch {
+        // Keep login usable if session recovery fails.
+      } finally {
+        if (isMounted) {
+          setCheckingSession(false);
+        }
+      }
+    };
+
+    void redirectAuthenticatedUser();
+    return () => {
+      isMounted = false;
+    };
+  }, [router]);
 
   useEffect(() => {
     const r = searchParams.get('role');
@@ -45,12 +70,6 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
-
-    const redirectTarget = searchParams.get('redirect');
-    if (redirectTarget?.startsWith('/')) {
-      return router.push(redirectTarget);
-    }
-
     setLoading(true);
     try {
       const supabase = getSupabaseBrowserClient();
@@ -75,7 +94,6 @@ export default function LoginPage() {
         .select('role')
         .eq('id', user.id)
         .maybeSingle();
-
       if (profileReadError) {
         setErrorMessage(profileReadError.message);
         await supabase.auth.signOut();
@@ -96,7 +114,6 @@ export default function LoginPage() {
           .select('id')
           .eq('owner_profile_id', user.id)
           .maybeSingle();
-
         if (cpError) {
           setErrorMessage(cpError.message);
           await supabase.auth.signOut();
@@ -109,6 +126,12 @@ export default function LoginPage() {
           );
           return;
         }
+      }
+
+      const redirectTarget = searchParams.get('redirect');
+      if (redirectTarget?.startsWith('/')) {
+        router.replace(redirectTarget);
+        return;
       }
 
       const preferred: AppRole =
@@ -125,6 +148,14 @@ export default function LoginPage() {
     }
   };
 
+  if (checkingSession) {
+    return (
+      <div className="w-full max-w-md rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl">
+        Checking your session...
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-md">
       <div className="text-center mb-8">
@@ -138,18 +169,16 @@ export default function LoginPage() {
       <div className="bg-white rounded-lg shadow-xl p-8">
         {showRegisteredBanner ? (
           <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm font-medium text-green-800">
-            🟢 Registration successful! Please log in with your new credentials.
+            Registration successful! Please log in with your new credentials.
           </div>
         ) : null}
-        {/* Role Toggle */}
+
         <div className="flex rounded-lg border-2 border-[#e5e5e5] overflow-hidden mb-6">
           <button
             type="button"
             onClick={() => setRole('donor')}
             className={`flex-1 py-2.5 text-sm font-medium transition-all ${
-              role === 'donor'
-                ? 'bg-[#da1a32] text-white'
-                : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
+              role === 'donor' ? 'bg-[#da1a32] text-white' : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
           >
             Donor
@@ -158,9 +187,7 @@ export default function LoginPage() {
             type="button"
             onClick={() => setRole('receiver')}
             className={`flex-1 py-2.5 text-sm font-medium transition-all ${
-              role === 'receiver'
-                ? 'bg-[#da1a32] text-white'
-                : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
+              role === 'receiver' ? 'bg-[#da1a32] text-white' : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
           >
             Receiver
@@ -191,7 +218,6 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
                 className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-[#da1a32] focus:border-transparent text-[#000000]"
                 placeholder="you@example.com"
               />
@@ -210,9 +236,8 @@ export default function LoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
                 className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-[#da1a32] focus:border-transparent text-[#000000]"
-                placeholder="••••••••"
+                placeholder="Enter your password"
               />
             </div>
           </div>
@@ -236,12 +261,12 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Signing in…' : 'Login'}
+            {loading ? 'Signing in...' : 'Login'}
           </button>
         </form>
 
         <div className="mt-6 text-center text-sm">
-          <span className="text-gray-600">Don't have an account? </span>
+          <span className="text-gray-600">Don&apos;t have an account? </span>
           <Link href="/signup" className="text-[#da1a32] hover:text-[#b01528] font-medium">
             Sign up
           </Link>

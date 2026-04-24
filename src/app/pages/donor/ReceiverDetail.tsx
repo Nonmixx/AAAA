@@ -10,6 +10,17 @@ import { getNgoById, type NgoDemandProfile } from '../../lib/ngos-demand-catalog
 const LEGACY_LIST_ID_TO_NGO: Record<string, string> = {
   '1': 'ngo_hope_orphanage',
   '2': 'ngo_care_foundation',
+  '3': 'ngo_pages_library',
+  '4': 'ngo_urban_shelter',
+};
+
+const NGO_COORDINATES: Record<string, { lat: number; lng: number }> = {
+  ngo_hope_orphanage: { lat: 3.139, lng: 101.6869 },
+  ngo_care_foundation: { lat: 3.1073, lng: 101.6067 },
+  ngo_green_pantry: { lat: 3.0738, lng: 101.5183 },
+  ngo_pages_library: { lat: 3.043, lng: 101.581 },
+  ngo_river_clinic: { lat: 3.0449, lng: 101.4456 },
+  ngo_urban_shelter: { lat: 3.1357, lng: 101.688 },
 };
 
 function resolveNgoFromRouteParam(id: string | string[] | undefined): NgoDemandProfile {
@@ -96,6 +107,11 @@ export function ReceiverDetail({ backHref = '/donor/needs', donateHref = '/donor
   const { id } = useParams();
 
   const ngo = useMemo(() => resolveNgoFromRouteParam(id), [id]);
+  const mapQuery = encodeURIComponent(ngo.location.replace(/•.*$/, '').trim());
+  const mapPoint = NGO_COORDINATES[ngo.id];
+  const mapSrc = mapPoint
+    ? `https://www.openstreetmap.org/export/embed.html?bbox=${mapPoint.lng - 0.03},${mapPoint.lat - 0.02},${mapPoint.lng + 0.03},${mapPoint.lat + 0.02}&layer=mapnik&marker=${mapPoint.lat},${mapPoint.lng}`
+    : `https://www.google.com/maps?q=${mapQuery}&output=embed`;
 
   const demoEmail = `info@${ngo.id.replace(/^ngo_/, '').replace(/_/g, '')}.org`;
 
@@ -184,12 +200,14 @@ export function ReceiverDetail({ backHref = '/donor/needs', donateHref = '/donor
 
           <div className="bg-white rounded-2xl p-6 border-2 border-[#e5e5e5] shadow-sm">
             <h2 className="text-xl mb-4 text-[#000000] font-bold">Location Map</h2>
-            <div className="bg-gradient-to-br from-[#edf2f4] to-[#e5e5e5] rounded-xl h-64 flex items-center justify-center border-2 border-[#e5e5e5]">
-              <div className="text-center text-gray-600">
-                <MapPin className="w-12 h-12 mx-auto mb-2 text-[#da1a32]" />
-                <p className="text-[#000000] font-medium">Map showing {ngo.name}</p>
-                <p className="text-sm">{ngo.location}</p>
-              </div>
+            <div className="rounded-xl h-64 overflow-hidden border-2 border-[#e5e5e5]">
+              <iframe
+                title={`Map showing ${ngo.name}`}
+                src={mapSrc}
+                className="w-full h-full border-0"
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
             </div>
           </div>
         </div>

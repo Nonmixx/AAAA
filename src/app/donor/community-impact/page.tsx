@@ -35,21 +35,17 @@ export default function CommunityImpactPage() {
             {impactDeliveryCards.map((card) => (
               <div key={card.title} className="bg-white border-2 border-[#edf2f4] rounded-2xl shadow-lg p-7 hover:-translate-y-1 hover:shadow-xl transition-all duration-200">
                 <h3 className="text-xl font-bold text-[#000000] mb-5">{card.title}</h3>
-
                 <div className="space-y-4 mb-6">
                   <p className="text-base text-[#000000] font-normal">Item: {card.item}</p>
                   <p className="text-sm text-gray-500">From {card.route}</p>
                 </div>
-
                 <div className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold mb-6 ${card.badgeClass}`}>
                   {card.status}
                 </div>
-
                 <div className="border-t border-[#edf2f4] pt-4 space-y-2 mb-7 text-[#000000]">
                   <p className="text-sm text-gray-600">Delivery Cost: {card.deliveryCost}</p>
                   <p className="text-sm text-gray-600">Platform Fee: {card.platformFee}</p>
                 </div>
-
                 <Link href="/login?redirect=%2Fdonor%2Fcheckout">
                   <button className="w-full px-5 py-3 bg-[#da1a32] text-white rounded-lg hover:bg-[#b01528] hover:scale-[1.01] transition-all duration-200 font-semibold shadow-lg">
                     {card.payText}

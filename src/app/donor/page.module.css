@@ -1,0 +1,26 @@
+.tickerTrack {
+  animation: liveTicker 22s linear infinite;
+}
+
+.tickerFadeLeft {
+  background: linear-gradient(to right, #0a0a0a 5%, rgba(10, 10, 10, 0));
+}
+
+.tickerFadeRight {
+  background: linear-gradient(to left, #0a0a0a 5%, rgba(10, 10, 10, 0));
+}
+
+@keyframes liveTicker {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tickerTrack {
+    animation: none;
+  }
+}

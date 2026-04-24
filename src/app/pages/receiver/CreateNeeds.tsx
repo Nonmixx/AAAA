@@ -1,9 +1,12 @@
 // @ts-nocheck
 import type React from 'react';
 import { useEffect, useState } from 'react';
-import { Sparkles, Package, AlertCircle } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Sparkles, Package, AlertCircle, ImagePlus, X } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { getCurrentReceiverContext } from '@/lib/supabase/receiver';
+import { uploadPublicImage } from '@/lib/supabase/media';
+import { parseNeedImageUrls } from '@/lib/media';
 
 type Urgency = 'low' | 'medium' | 'high';
 
@@ -17,10 +20,20 @@ type NeedForm = {
 };
 
 export function CreateNeeds() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const editingNeedId = searchParams.get('need');
+  const isEditing = !!editingNeedId;
   const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [initializing, setInitializing] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [needImageFiles, setNeedImageFiles] = useState<File[]>([]);
+  const [needImagePreviews, setNeedImagePreviews] = useState<string[]>([]);
+  const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
+  const [existingImageUrls, setExistingImageUrls] = useState<string[]>([]);
   const [form, setForm] = useState<NeedForm>({
     title: '',
     description: '',
@@ -31,18 +44,67 @@ export function CreateNeeds() {
   });
 
   useEffect(() => {
-    const loadOrganization = async () => {
+    const loadOrganizationAndNeed = async () => {
       setErrorMessage(null);
+      setInitializing(true);
       try {
+        const supabase = getSupabaseBrowserClient();
         const context = await getCurrentReceiverContext();
         setOrganizationId(context.organization.id);
+
+        if (!editingNeedId) {
+          setExistingImageUrl(null);
+          return;
+        }
+
+        const { data: need, error } = await supabase
+          .from('needs')
+          .select('id, organization_id, title, image_url, description, category, quantity_requested, urgency')
+          .eq('id', editingNeedId)
+          .eq('organization_id', context.organization.id)
+          .maybeSingle();
+
+        if (error) throw error;
+        if (!need) {
+          setErrorMessage('Need not found or you do not have access to edit it.');
+          return;
+        }
+
+        const descriptionText = typeof need.description === 'string' ? need.description : '';
+        const detailsMarker = '\n\nAdditional Details:\n';
+        const markerIndex = descriptionText.indexOf(detailsMarker);
+        const baseDescription = markerIndex >= 0 ? descriptionText.slice(0, markerIndex) : descriptionText;
+        const additionalDetails = markerIndex >= 0 ? descriptionText.slice(markerIndex + detailsMarker.length) : '';
+
+        setForm({
+          title: need.title ?? '',
+          description: baseDescription,
+          category: need.category ?? '',
+          quantity: need.quantity_requested ? String(need.quantity_requested) : '',
+          urgency: (need.urgency as Urgency) ?? 'medium',
+          details: additionalDetails,
+        });
+        setExistingImageUrl(need.image_url ?? null);
+        setExistingImageUrls(parseNeedImageUrls(need.image_url));
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load organization.');
+      } finally {
+        setInitializing(false);
       }
     };
 
-    void loadOrganization();
-  }, []);
+    void loadOrganizationAndNeed();
+  }, [editingNeedId]);
+
+  useEffect(() => {
+    if (needImageFiles.length === 0) {
+      setNeedImagePreviews(existingImageUrls);
+      return;
+    }
+    const objectUrls = needImageFiles.map((file) => URL.createObjectURL(file));
+    setNeedImagePreviews(objectUrls);
+    return () => objectUrls.forEach((url) => URL.revokeObjectURL(url));
+  }, [existingImageUrls, needImageFiles]);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
@@ -52,9 +114,44 @@ export function CreateNeeds() {
     setForm((prev) => ({ ...prev, urgency: value }));
   };
 
+  const onNeedImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) {
+      setNeedImageFiles([]);
+      return;
+    }
+
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) {
+        setErrorMessage('Please upload image files for the need.');
+        e.target.value = '';
+        return;
+      }
+    }
+
+    setErrorMessage(null);
+    setNeedImageFiles(files);
+  };
+
+  const clearNeedImage = (index?: number) => {
+    if (typeof index === 'number') {
+      if (needImageFiles.length > 0) {
+        setNeedImageFiles((prev) => prev.filter((_, i) => i !== index));
+      } else {
+        setExistingImageUrls((prev) => prev.filter((_, i) => i !== index));
+      }
+      return;
+    }
+    setNeedImageFiles([]);
+    setNeedImagePreviews([]);
+    setExistingImageUrl(null);
+    setExistingImageUrls([]);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setWarningMessage(null);
     setSuccessMessage(null);
 
     if (!organizationId) {
@@ -75,21 +172,55 @@ export function CreateNeeds() {
         data: { user },
       } = await supabase.auth.getUser();
 
-      const { error } = await supabase.from('needs').insert({
+      let imageUrl: string | null = existingImageUrl;
+      let finalImageUrls = existingImageUrls;
+
+      if (needImageFiles.length > 0) {
+        const uploaded: string[] = [];
+        for (const file of needImageFiles) {
+          try {
+            const uploadedUrl = await uploadPublicImage(file, `needs/${organizationId}`);
+            uploaded.push(uploadedUrl);
+          } catch {
+            // continue uploading the rest
+          }
+        }
+        finalImageUrls = uploaded;
+        if (uploaded.length === 0) {
+          setWarningMessage('Image upload failed. Posting the need without an image.');
+        }
+      }
+      imageUrl =
+        finalImageUrls.length > 1
+          ? JSON.stringify(finalImageUrls)
+          : finalImageUrls[0] ?? null;
+
+      const payload = {
         organization_id: organizationId,
         created_by_profile_id: user?.id ?? null,
         title: form.title,
+        image_url: imageUrl,
         description: form.details ? `${form.description}\n\nAdditional Details:\n${form.details}` : form.description,
         category: form.category,
         quantity_requested: quantity,
         urgency: form.urgency,
-        status: 'active',
-        published_at: new Date().toISOString(),
-      });
+      };
+
+      const { error } = isEditing
+        ? await supabase
+            .from('needs')
+            .update(payload)
+            .eq('id', editingNeedId)
+            .eq('organization_id', organizationId)
+        : await supabase.from('needs').insert({
+            ...payload,
+            status: 'active',
+            published_at: new Date().toISOString(),
+          });
 
       if (error) throw error;
 
-      setSuccessMessage('Need posted successfully.');
+      setSuccessMessage(isEditing ? 'Need updated successfully.' : 'Need posted successfully.');
       setForm({
         title: '',
         description: '',
@@ -98,18 +229,34 @@ export function CreateNeeds() {
         urgency: 'medium',
         details: '',
       });
+      clearNeedImage();
+      if (isEditing) {
+        router.replace('/receiver');
+      }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Unable to post need.');
+      setErrorMessage(err instanceof Error ? err.message : isEditing ? 'Unable to update need.' : 'Unable to post need.');
     } finally {
       setLoading(false);
     }
   };
 
+  if (initializing) {
+    return (
+      <div className="p-6 max-w-4xl mx-auto">
+        <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-8 text-center text-sm text-gray-500 shadow-sm">
+          Loading need details...
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl mb-2 text-[#000000] font-bold">Create New Need</h1>
-        <p className="text-gray-600">Post your organization&apos;s requirements to attract donors</p>
+        <h1 className="text-3xl mb-2 text-[#000000] font-bold">{isEditing ? 'Edit Need' : 'Create New Need'}</h1>
+        <p className="text-gray-600">
+          {isEditing ? 'Update your organization&apos;s request and keep donors informed' : 'Post your organization&apos;s requirements to attract donors'}
+        </p>
       </div>
 
       <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
@@ -119,7 +266,9 @@ export function CreateNeeds() {
           </div>
           <div>
             <h3 className="font-medium text-[#000000]">Describe Your Needs</h3>
-            <p className="text-sm text-gray-600">Be specific to help donors understand your requirements</p>
+            <p className="text-sm text-gray-600">
+              {isEditing ? 'Adjust the details below to update this published need' : 'Be specific to help donors understand your requirements'}
+            </p>
           </div>
         </div>
 
@@ -136,6 +285,12 @@ export function CreateNeeds() {
             </div>
           )}
 
+          {warningMessage && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {warningMessage}
+            </div>
+          )}
+
           <div>
             <label className="block text-sm mb-2 text-[#000000] font-medium">Need Title</label>
             <input
@@ -146,6 +301,43 @@ export function CreateNeeds() {
               placeholder="Example: Food Packs for 80 children"
               className="w-full px-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm mb-2 text-[#000000] font-medium">Need Image (Optional)</label>
+            <div className="rounded-2xl border-2 border-dashed border-[#e5e5e5] bg-[#edf2f4]/50 p-5">
+              {needImagePreviews.length > 0 ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {needImagePreviews.map((preview, idx) => (
+                    <div key={`${preview}-${idx}`} className="relative overflow-hidden rounded-xl border border-[#e5e5e5] bg-white">
+                      <img src={preview} alt={`Need preview ${idx + 1}`} className="h-56 w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => clearNeedImage(idx)}
+                        className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/70 text-white transition-colors hover:bg-black"
+                        aria-label="Remove image"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-white bg-white px-6 py-10 text-center transition-colors hover:border-[#da1a32]">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#da1a32] text-white">
+                    <ImagePlus className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-[#000000]">Upload a photo for this need</p>
+                    <p className="mt-1 text-sm text-gray-600">Use one or more clear images of the requested items, storage area, or delivery context.</p>
+                  </div>
+                  <span className="rounded-lg border border-[#e5e5e5] px-4 py-2 text-sm font-medium text-[#000000]">
+                    Choose Image
+                  </span>
+                  <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" onChange={onNeedImageChange} />
+                </label>
+              )}
+            </div>
           </div>
 
           <div>
@@ -245,10 +437,10 @@ export function CreateNeeds() {
           <div className="bg-[#edf2f4] border-2 border-[#e5e5e5] rounded-xl p-4">
             <h4 className="text-sm mb-2 text-[#000000] font-medium">Tips for Better Results:</h4>
             <ul className="text-sm text-gray-600 space-y-1">
-              <li>• Be specific about quantities and item details</li>
-              <li>• Explain why these items are needed</li>
-              <li>• Set realistic urgency levels</li>
-              <li>• Include any special requirements upfront</li>
+              <li>- Be specific about quantities and item details</li>
+              <li>- Explain why these items are needed</li>
+              <li>- Set realistic urgency levels</li>
+              <li>- Include any special requirements upfront</li>
             </ul>
           </div>
 
@@ -257,7 +449,7 @@ export function CreateNeeds() {
             disabled={loading || !organizationId}
             className="w-full bg-[#da1a32] text-white py-3 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium"
           >
-            {loading ? 'Posting...' : 'Post Need'}
+            {loading ? (isEditing ? 'Saving...' : 'Posting...') : isEditing ? 'Save Changes' : 'Post Need'}
           </button>
         </form>
       </div>

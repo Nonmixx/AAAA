@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation';
 import { Heart, Building2, FileText, Upload, Phone, Mail, Lock, User } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { ensureProfile, ensureSessionAfterSignUp, resolveAuthenticatedRoute } from '@/lib/supabase/auth';
+import { geocodeMalaysiaAddress } from '@/lib/geocoding';
 
 export function ReceiverVerification({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const [existingReceiverId, setExistingReceiverId] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -85,6 +87,32 @@ export function ReceiverVerification({ embedded = false }: { embedded?: boolean 
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
+  const handleLogout = async () => {
+    if (loggingOut) return;
+
+    setLoggingOut(true);
+    setErrorMessage(null);
+
+    try {
+      const supabase = getSupabaseBrowserClient();
+      await supabase.auth.signOut();
+
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const projectRef = supabaseUrl ? new URL(supabaseUrl).hostname.split('.')[0] : null;
+      if (projectRef) {
+        window.localStorage.removeItem(`sb-${projectRef}-auth-token`);
+        window.sessionStorage.removeItem(`sb-${projectRef}-auth-token`);
+      }
+
+      router.replace('/login');
+      router.refresh();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to log out.');
+    } finally {
+      setLoggingOut(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -136,6 +164,8 @@ export function ReceiverVerification({ embedded = false }: { embedded?: boolean 
         return;
       }
 
+      const geocoded = form.address ? await geocodeMalaysiaAddress(form.address) : null;
+
       const { error: orgError } = await supabase.from('organizations').insert({
         owner_profile_id: receiverId,
         name: form.organizationName,
@@ -143,6 +173,9 @@ export function ReceiverVerification({ embedded = false }: { embedded?: boolean 
         contact_email: form.contactEmail || form.email,
         contact_phone: form.contactPhone || null,
         address: form.address || null,
+        location_name: geocoded?.locationName ?? null,
+        latitude: geocoded?.latitude ?? null,
+        longitude: geocoded?.longitude ?? null,
         verification_status: 'pending',
       });
 
@@ -332,6 +365,10 @@ export function ReceiverVerification({ embedded = false }: { embedded?: boolean 
             </div>
           </div>
 
+          <div className="rounded-lg border border-[#e5e5e5] bg-[#edf2f4] px-4 py-3 text-sm text-gray-600">
+            You can add your organization logo after signup from the Receiver Profile page. That keeps verification quick while still giving public need cards a strong fallback image later.
+          </div>
+
           <div className="bg-[#e5e5e5] rounded-lg p-4">
             <h4 className="flex items-center gap-2 text-sm mb-2 text-[#000000] font-medium">
               <FileText className="w-4 h-4 text-[#da1a32]" />
@@ -373,6 +410,19 @@ export function ReceiverVerification({ embedded = false }: { embedded?: boolean 
           <Link href="/login" className="text-sm text-gray-600 hover:text-[#000000]">
             Back to Login
           </Link>
+        </div>
+      ) : null}
+
+      {!embedded ? (
+        <div className="mt-3 text-center">
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="text-sm text-[#da1a32] hover:text-[#b01528] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loggingOut ? 'Logging out...' : 'Log out and use a different account'}
+          </button>
         </div>
       ) : null}
     </>
