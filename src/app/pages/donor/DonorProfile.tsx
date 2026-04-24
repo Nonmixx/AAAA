@@ -185,6 +185,18 @@ export function DonorProfile() {
         <p className="text-gray-600">Manage your account and view your impact</p>
       </div>
 
+      {errorMessage && (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {errorMessage}
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="mb-6 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          {successMessage}
+        </div>
+      )}
+
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
@@ -196,8 +208,10 @@ export function DonorProfile() {
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                   <input
                     type="text"
-                    defaultValue="Sarah Johnson"
-                    className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
+                    value={form.fullName}
+                    onChange={(e) => setForm((prev) => ({ ...prev, fullName: e.target.value }))}
+                    disabled={loading}
+                    className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-[#edf2f4]"
                   />
                 </div>
               </div>
@@ -209,8 +223,9 @@ export function DonorProfile() {
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                     <input
                       type="email"
-                      defaultValue="sarah.johnson@email.com"
-                      className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
+                      value={email}
+                      readOnly
+                      className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl bg-[#edf2f4] text-gray-600"
                     />
                   </div>
                 </div>
@@ -221,8 +236,10 @@ export function DonorProfile() {
                     <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                     <input
                       type="tel"
-                      defaultValue="+60 12-345 6789"
-                      className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent"
+                      value={form.phone}
+                      onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
+                      disabled={loading}
+                      className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-[#edf2f4]"
                     />
                   </div>
                 </div>
@@ -237,14 +254,18 @@ export function DonorProfile() {
                     value={form.address}
                     onChange={(e) => setForm((prev) => ({ ...prev, address: e.target.value }))}
                     disabled={loading}
-                    placeholder="Enter your address"
+                    placeholder="Enter your address (Optional)"
                     className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-[#edf2f4]"
                   />
                 </div>
               </div>
 
-              <button className="bg-[#da1a32] text-white px-6 py-3 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium">
-                Save Changes
+              <button
+                onClick={() => void handleSave()}
+                disabled={loading || saving || !profileId}
+                className="bg-[#da1a32] text-white px-6 py-3 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
           </div>
@@ -252,44 +273,30 @@ export function DonorProfile() {
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
             <h2 className="text-xl mb-6 text-[#000000] font-bold">Donation History</h2>
             <div className="space-y-4">
-              <div className="flex items-center gap-4 p-4 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
-                <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center">
-                  <Package className="w-6 h-6 text-white" />
+              {!loading && donationHistory.length === 0 && (
+                <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4] px-4 py-6 text-sm text-gray-600">
+                  No donations recorded yet.
                 </div>
-                <div className="flex-1">
-                  <div className="font-medium text-[#000000]">100 Food Packs</div>
-                  <div className="text-sm text-gray-600">Hope Orphanage • April 16, 2026</div>
-                </div>
-                <div className="px-3 py-1 bg-green-50 text-green-600 text-xs rounded-full border border-green-100 font-medium">
-                  Delivered
-                </div>
-              </div>
+              )}
 
-              <div className="flex items-center gap-4 p-4 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
-                <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center">
-                  <Package className="w-6 h-6 text-white" />
+              {donationHistory.map((donation) => (
+                <div key={donation.id} className="flex items-center gap-4 p-4 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
+                  <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center">
+                    <Package className="w-6 h-6 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="font-medium text-[#000000]">
+                      {donation.quantity_total} {donation.item_name}
+                    </div>
+                    <div className="text-sm text-gray-600">
+                      {getOrganizationNameFromAllocations(donation)} • {new Date(donation.created_at).toLocaleDateString('en-GB')}
+                    </div>
+                  </div>
+                  <div className={`px-3 py-1 text-xs rounded-full border font-medium ${getStatusBadge(donation.status)}`}>
+                    {formatDonationStatus(donation.status)}
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <div className="font-medium text-[#000000]">50 Blankets</div>
-                  <div className="text-sm text-gray-600">Care Foundation • April 18, 2026</div>
-                </div>
-                <div className="px-3 py-1 bg-yellow-50 text-yellow-600 text-xs rounded-full border border-yellow-100 font-medium">
-                  In Transit
-                </div>
-              </div>
-
-              <div className="flex items-center gap-4 p-4 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
-                <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center">
-                  <Package className="w-6 h-6 text-white" />
-                </div>
-                <div className="flex-1">
-                  <div className="font-medium text-[#000000]">200 kg Rice</div>
-                  <div className="text-sm text-gray-600">Multiple Organizations • April 10, 2026</div>
-                </div>
-                <div className="px-3 py-1 bg-green-50 text-green-600 text-xs rounded-full border border-green-100 font-medium">
-                  Delivered
-                </div>
-              </div>
+              ))}
             </div>
           </div>
         </div>
@@ -300,15 +307,15 @@ export function DonorProfile() {
             <h3 className="text-xl mb-4 font-bold">Your Impact</h3>
             <div className="space-y-4">
               <div>
-                <div className="text-3xl mb-1 font-bold">24</div>
-                <div className="text-sm text-white opacity-80">Total Donations</div>
+                <div className="text-3xl mb-1 font-bold">{loading ? '-' : impact.totalDonations}</div>
+                <div className="text-sm text-white opacity-80">Recent Donations Loaded</div>
               </div>
               <div>
-                <div className="text-3xl mb-1 font-bold">1,250</div>
+                <div className="text-3xl mb-1 font-bold">{loading ? '-' : impact.totalItems}</div>
                 <div className="text-sm text-white opacity-80">Items Donated</div>
               </div>
               <div>
-                <div className="text-3xl mb-1 font-bold">12</div>
+                <div className="text-3xl mb-1 font-bold">{loading ? '-' : impact.organizationsHelped}</div>
                 <div className="text-sm text-white opacity-80">Organizations Helped</div>
               </div>
             </div>
@@ -317,20 +324,20 @@ export function DonorProfile() {
           <div className="bg-white rounded-2xl p-6 border-2 border-[#e5e5e5] shadow-sm">
             <div className="flex items-center gap-2 mb-4">
               <TrendingUp className="w-5 h-5 text-[#da1a32]" />
-              <h3 className="text-lg text-[#000000] font-bold">This Month</h3>
+              <h3 className="text-lg text-[#000000] font-bold">Account Summary</h3>
             </div>
             <div className="space-y-3">
               <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-600">Donations</span>
-                <span className="font-medium text-[#000000]">5</span>
+                <span className="text-sm text-gray-600">Profile ID</span>
+                <span className="font-medium text-[#000000]">{profileId ? `${profileId.slice(0, 8)}...` : '-'}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-600">Items</span>
-                <span className="font-medium text-[#000000]">250</span>
+                <span className="text-sm text-gray-600">Role</span>
+                <span className="font-medium text-[#000000]">Donor</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-600">Organizations</span>
-                <span className="font-medium text-[#000000]">3</span>
+                <span className="text-sm text-gray-600">Login Email</span>
+                <span className="font-medium text-[#000000] text-right break-all">{email || '-'}</span>
               </div>
             </div>
           </div>
