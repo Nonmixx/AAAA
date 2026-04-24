@@ -101,12 +101,12 @@ export function ViewNeeds() {
 
         if (error) throw error;
 
-        const approvedNeeds = ((data ?? []) as NeedRecord[]).filter((need) => {
+        const visibleNeeds = ((data ?? []) as NeedRecord[]).filter((need) => {
           const organization = getOrganizationRecord(need.organizations);
-          return organization?.verification_status === 'approved';
+          return Boolean(organization?.name);
         });
 
-        setNeeds(approvedNeeds);
+        setNeeds(visibleNeeds);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load public needs.');
       } finally {

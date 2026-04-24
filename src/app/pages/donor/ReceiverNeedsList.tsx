@@ -1,66 +1,12 @@
 'use client';
 
 import Link from 'next/link';
-import { Building2, MapPin, Package, AlertCircle, Zap } from 'lucide-react';
+import { Building2, MapPin, Package, AlertCircle, Zap, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useDonorContext } from '../../context/DonorContext';
 import type { PublicBrowseReceiver } from '@/lib/publicNeeds';
-
-const mockReceivers = [
-  {
-    id: '1',
-    name: 'Hope Orphanage',
-    location: 'Kuala Lumpur',
-    latitude: 3.139,
-    longitude: 101.6869,
-    emergency: true,
-    emergencyReason: 'Flash flood displaced 80 children',
-    items: [
-      { item: 'Food Packs', quantity: 100, urgency: 'high' },
-      { item: 'School Supplies', quantity: 50, urgency: 'medium' },
-    ],
-  },
-  {
-    id: '2',
-    name: 'Care Foundation',
-    location: 'Petaling Jaya',
-    latitude: 3.1073,
-    longitude: 101.6067,
-    emergency: true,
-    emergencyReason: 'Critical shortage after donations halted',
-    items: [
-      { item: 'Blankets', quantity: 75, urgency: 'high' },
-      { item: 'Medical Supplies', quantity: 30, urgency: 'high' },
-    ],
-  },
-  {
-    id: '3',
-    name: 'Pages Library',
-    location: 'George Town',
-    latitude: 5.4164,
-    longitude: 100.3327,
-    emergency: false,
-    emergencyReason: '',
-    items: [
-      { item: 'Bookshelves', quantity: 8, urgency: 'medium' },
-      { item: 'Floor Mats', quantity: 20, urgency: 'low' },
-    ],
-  },
-  {
-    id: '4',
-    name: 'Urban Shelter',
-    location: 'Johor Bahru',
-    latitude: 1.4927,
-    longitude: 103.7414,
-    emergency: false,
-    emergencyReason: '',
-    items: [
-      { item: 'Bottled Water', quantity: 500, urgency: 'high' },
-      { item: 'Baby Formula', quantity: 120, urgency: 'medium' },
-    ],
-  },
-];
+import { DEFAULT_NEED_IMAGE, getContextualDefaultNeedImage } from '@/lib/media';
 
 const urgencyColors: Record<string, string> = {
   high: 'bg-red-50 text-red-600 border-red-100',
@@ -75,6 +21,59 @@ type ReceiverNeedsListProps = {
   /** Live rows from Supabase; merged ahead of demo data when present. */
   liveReceivers?: PublicBrowseReceiver[];
 };
+
+function ImageCarousel({
+  images,
+  altPrefix,
+}: {
+  images: string[];
+  altPrefix: string;
+}) {
+  const [index, setIndex] = useState(0);
+  const total = images.length;
+  const current = images[index] || DEFAULT_NEED_IMAGE;
+
+  const prev = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIndex((i) => (i - 1 + total) % total);
+  };
+
+  const next = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIndex((i) => (i + 1) % total);
+  };
+
+  return (
+    <div className="relative mb-4 overflow-hidden rounded-xl border border-[#e5e5e5]">
+      <img src={current} alt={`${altPrefix} ${index + 1}`} className="h-44 w-full object-cover" />
+      {total > 1 ? (
+        <>
+          <button
+            type="button"
+            onClick={prev}
+            className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white hover:bg-black/70"
+            aria-label="Previous image"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={next}
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white hover:bg-black/70"
+            aria-label="Next image"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <div className="absolute bottom-2 right-2 rounded bg-black/55 px-2 py-0.5 text-[11px] text-white">
+            {index + 1}/{total}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 export function ReceiverNeedsList({
   detailBasePath = '/donor/needs',
@@ -126,11 +125,7 @@ export function ReceiverNeedsList({
   const resolvedShowBackButton = isPublicNeedsRoute ? true : showBackButton;
   const resolvedBackHref = isPublicNeedsRoute ? '/donor' : backHref;
 
-  const mergedReceivers = useMemo(() => {
-    const demoIds = new Set(mockReceivers.map((r) => r.id));
-    const uniqueLive = liveReceivers.filter((r) => !demoIds.has(r.id));
-    return [...uniqueLive, ...mockReceivers];
-  }, [liveReceivers]);
+  const mergedReceivers = useMemo(() => liveReceivers, [liveReceivers]);
 
   const sortedReceivers = emergencyMode
     ? [...mergedReceivers].sort((a, b) => (b.emergency ? 1 : 0) - (a.emergency ? 1 : 0))
@@ -181,18 +176,53 @@ export function ReceiverNeedsList({
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
+        {sortedReceivers.length === 0 ? (
+          <div className="lg:col-span-2 rounded-xl border border-[#e5e5e5] bg-white px-6 py-10 text-center text-gray-600">
+            No active organizations are available yet.
+          </div>
+        ) : null}
         {sortedReceivers.map((receiver) => (
           <Link key={receiver.id} href={`${resolvedDetailBasePath}/${receiver.id}`}>
+            {(() => {
+              const receiverImages = Array.from(
+                new Set(
+                  receiver.items.flatMap((item) =>
+                    item.imageUrls && item.imageUrls.length > 0
+                      ? item.imageUrls
+                      : item.imageUrl
+                        ? [item.imageUrl]
+                        : []
+                  )
+                )
+              );
+              const cardMainImage =
+                receiverImages[0] ||
+                getContextualDefaultNeedImage(receiver.items.map((item) => item.item).join(' ')) ||
+                DEFAULT_NEED_IMAGE;
+              return (
             <div
               className={`bg-white rounded-2xl p-6 border-2 shadow-sm hover:shadow-md hover:border-[#da1a32] transition-all cursor-pointer ${
                 emergencyMode && receiver.emergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'
               }`}
             >
+              <ImageCarousel
+                images={receiverImages.length > 0 ? receiverImages : [cardMainImage]}
+                altPrefix={`${receiver.name} need image`}
+              />
+
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
-                    <Building2 className="w-6 h-6 text-white" />
-                  </div>
+                  {receiver.organizationLogoUrl ? (
+                    <img
+                      src={receiver.organizationLogoUrl}
+                      alt={`${receiver.name} logo`}
+                      className="h-12 w-12 rounded-xl border border-[#e5e5e5] object-cover flex-shrink-0 shadow-sm"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+                      <Building2 className="w-6 h-6 text-white" />
+                    </div>
+                  )}
                   <div>
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <h3 className="text-lg text-[#000000] font-bold">{receiver.name}</h3>
@@ -242,6 +272,8 @@ export function ReceiverNeedsList({
                 </div>
               </div>
             </div>
+              );
+            })()}
           </Link>
         ))}
       </div>

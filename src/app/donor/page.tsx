@@ -2,47 +2,9 @@ import Link from 'next/link';
 import { Heart, Package, Sparkles, TrendingUp, Users, Zap, Shield } from 'lucide-react';
 import { DonorLayout } from '../components/layouts/DonorLayout';
 import { fetchPublicBrowseReceivers } from '@/lib/publicNeeds';
+import { DEFAULT_NEED_IMAGE, getContextualDefaultNeedImage } from '@/lib/media';
 import styles from './page.module.css';
 import { UrgentNeedsSection, type UrgentNeedCard } from './UrgentNeedsSection';
-
-const fallbackFeaturedNeeds: UrgentNeedCard[] = [
-  {
-    id: 'ngo_hope_orphanage',
-    organization: 'Hope Orphanage',
-    location: 'Kuala Lumpur',
-    latitude: 3.139,
-    longitude: 101.6869,
-    image: 'https://images.unsplash.com/photo-1771765767087-ce71e4a7916a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1080',
-    need: 'Clothing',
-    quantity: 100,
-    matched: 40,
-    urgency: 'high',
-  },
-  {
-    id: 'ngo_care_foundation',
-    organization: 'Care Foundation',
-    location: 'Petaling Jaya',
-    latitude: 3.1073,
-    longitude: 101.6067,
-    image: 'https://images.unsplash.com/photo-1763070282928-fe1135165d6d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1080',
-    need: 'Elder care',
-    quantity: 30,
-    matched: 18,
-    urgency: 'high',
-  },
-  {
-    id: 'ngo_pages_library',
-    organization: 'Pages Community Library',
-    location: 'Subang Jaya',
-    latitude: 3.043,
-    longitude: 101.581,
-    image: 'https://images.unsplash.com/photo-1503676260728-1c00da094a0b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1080',
-    need: 'Books',
-    quantity: 60,
-    matched: 0,
-    urgency: 'medium',
-  },
-];
 
 const stats = [
   { label: 'Donations', value: '15K+', icon: Package },
@@ -140,28 +102,38 @@ const liveNotifications = [
 
 export default async function DonorHomePage() {
   const liveReceivers = await fetchPublicBrowseReceivers();
-  const featuredNeeds = liveReceivers.length > 0
-    ? liveReceivers.slice(0, 3).map((receiver, index) => {
-        const topItem = receiver.items[0];
-        const requested = Math.max(topItem?.quantity ?? 0, 1);
-        const matched = 0;
-        return {
-          id: receiver.id,
-          organization: receiver.name,
-          location: receiver.location,
-          latitude: receiver.latitude,
-          longitude: receiver.longitude,
-          image:
-            topItem?.imageUrl ||
-            fallbackFeaturedNeeds[index % fallbackFeaturedNeeds.length]?.image ||
-            'https://images.unsplash.com/photo-1608979827489-2b855e79debe?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1080',
-          need: topItem?.item ?? 'Essential Supplies',
-          quantity: requested,
-          matched,
-          urgency: receiver.emergency ? 'high' : ((topItem?.urgency as 'high' | 'medium' | 'low') ?? 'medium'),
-        };
-      })
-    : fallbackFeaturedNeeds;
+  const featuredNeeds: UrgentNeedCard[] = liveReceivers.slice(0, 3).map((receiver) => {
+    const topItem = receiver.items[0];
+    const requested = Math.max(topItem?.quantity ?? 0, 1);
+    const matched = 0;
+    const receiverImages = Array.from(
+      new Set(
+        receiver.items.flatMap((item) =>
+          item.imageUrls && item.imageUrls.length > 0
+            ? item.imageUrls
+            : item.imageUrl
+              ? [item.imageUrl]
+              : []
+        )
+      )
+    );
+    return {
+      id: receiver.id,
+      organization: receiver.name,
+      location: receiver.location,
+      latitude: receiver.latitude,
+      longitude: receiver.longitude,
+      image:
+        receiverImages[0] ||
+        getContextualDefaultNeedImage(receiver.items.map((item) => item.item).join(' ')) ||
+        DEFAULT_NEED_IMAGE,
+      images: receiverImages.length > 1 ? receiverImages : undefined,
+      need: topItem?.item ?? 'Essential Supplies',
+      quantity: requested,
+      matched,
+      urgency: receiver.emergency ? 'high' : ((topItem?.urgency as 'high' | 'medium' | 'low') ?? 'medium'),
+    };
+  });
 
   return (
     <DonorLayout>

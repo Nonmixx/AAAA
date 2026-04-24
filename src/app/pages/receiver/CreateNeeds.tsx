@@ -6,6 +6,7 @@ import { Sparkles, Package, AlertCircle, ImagePlus, X } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { getCurrentReceiverContext } from '@/lib/supabase/receiver';
 import { uploadPublicImage } from '@/lib/supabase/media';
+import { parseNeedImageUrls } from '@/lib/media';
 
 type Urgency = 'low' | 'medium' | 'high';
 
@@ -29,9 +30,10 @@ export function CreateNeeds() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [needImageFile, setNeedImageFile] = useState<File | null>(null);
-  const [needImagePreview, setNeedImagePreview] = useState<string | null>(null);
+  const [needImageFiles, setNeedImageFiles] = useState<File[]>([]);
+  const [needImagePreviews, setNeedImagePreviews] = useState<string[]>([]);
   const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
+  const [existingImageUrls, setExistingImageUrls] = useState<string[]>([]);
   const [form, setForm] = useState<NeedForm>({
     title: '',
     description: '',
@@ -83,6 +85,7 @@ export function CreateNeeds() {
           details: additionalDetails,
         });
         setExistingImageUrl(need.image_url ?? null);
+        setExistingImageUrls(parseNeedImageUrls(need.image_url));
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load organization.');
       } finally {
@@ -94,16 +97,14 @@ export function CreateNeeds() {
   }, [editingNeedId]);
 
   useEffect(() => {
-    if (!needImageFile) {
-      setNeedImagePreview(existingImageUrl);
+    if (needImageFiles.length === 0) {
+      setNeedImagePreviews(existingImageUrls);
       return;
     }
-
-    const objectUrl = URL.createObjectURL(needImageFile);
-    setNeedImagePreview(objectUrl);
-
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [existingImageUrl, needImageFile]);
+    const objectUrls = needImageFiles.map((file) => URL.createObjectURL(file));
+    setNeedImagePreviews(objectUrls);
+    return () => objectUrls.forEach((url) => URL.revokeObjectURL(url));
+  }, [existingImageUrls, needImageFiles]);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
@@ -114,26 +115,37 @@ export function CreateNeeds() {
   };
 
   const onNeedImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0] ?? null;
-    if (!file) {
-      setNeedImageFile(null);
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) {
+      setNeedImageFiles([]);
       return;
     }
 
-    if (!file.type.startsWith('image/')) {
-      setErrorMessage('Please upload an image file for the need.');
-      e.target.value = '';
-      return;
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) {
+        setErrorMessage('Please upload image files for the need.');
+        e.target.value = '';
+        return;
+      }
     }
 
     setErrorMessage(null);
-    setNeedImageFile(file);
+    setNeedImageFiles(files);
   };
 
-  const clearNeedImage = () => {
-    setNeedImageFile(null);
-    setNeedImagePreview(null);
+  const clearNeedImage = (index?: number) => {
+    if (typeof index === 'number') {
+      if (needImageFiles.length > 0) {
+        setNeedImageFiles((prev) => prev.filter((_, i) => i !== index));
+      } else {
+        setExistingImageUrls((prev) => prev.filter((_, i) => i !== index));
+      }
+      return;
+    }
+    setNeedImageFiles([]);
+    setNeedImagePreviews([]);
     setExistingImageUrl(null);
+    setExistingImageUrls([]);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -161,18 +173,27 @@ export function CreateNeeds() {
       } = await supabase.auth.getUser();
 
       let imageUrl: string | null = existingImageUrl;
-      if (needImageFile) {
-        try {
-          imageUrl = await uploadPublicImage(needImageFile, `needs/${organizationId}`);
-        } catch (uploadError) {
-          imageUrl = null;
-          setWarningMessage(
-            uploadError instanceof Error
-              ? `${uploadError.message} Posting the need without an image.`
-              : 'Image upload failed. Posting the need without an image.',
-          );
+      let finalImageUrls = existingImageUrls;
+
+      if (needImageFiles.length > 0) {
+        const uploaded: string[] = [];
+        for (const file of needImageFiles) {
+          try {
+            const uploadedUrl = await uploadPublicImage(file, `needs/${organizationId}`);
+            uploaded.push(uploadedUrl);
+          } catch {
+            // continue uploading the rest
+          }
+        }
+        finalImageUrls = uploaded;
+        if (uploaded.length === 0) {
+          setWarningMessage('Image upload failed. Posting the need without an image.');
         }
       }
+      imageUrl =
+        finalImageUrls.length > 1
+          ? JSON.stringify(finalImageUrls)
+          : finalImageUrls[0] ?? null;
 
       const payload = {
         organization_id: organizationId,
@@ -285,17 +306,21 @@ export function CreateNeeds() {
           <div>
             <label className="block text-sm mb-2 text-[#000000] font-medium">Need Image (Optional)</label>
             <div className="rounded-2xl border-2 border-dashed border-[#e5e5e5] bg-[#edf2f4]/50 p-5">
-              {needImagePreview ? (
-                <div className="relative overflow-hidden rounded-xl border border-[#e5e5e5] bg-white">
-                  <img src={needImagePreview} alt="Need preview" className="h-56 w-full object-cover" />
-                  <button
-                    type="button"
-                    onClick={clearNeedImage}
-                    className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/70 text-white transition-colors hover:bg-black"
-                    aria-label="Remove image"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
+              {needImagePreviews.length > 0 ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {needImagePreviews.map((preview, idx) => (
+                    <div key={`${preview}-${idx}`} className="relative overflow-hidden rounded-xl border border-[#e5e5e5] bg-white">
+                      <img src={preview} alt={`Need preview ${idx + 1}`} className="h-56 w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => clearNeedImage(idx)}
+                        className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/70 text-white transition-colors hover:bg-black"
+                        aria-label="Remove image"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-white bg-white px-6 py-10 text-center transition-colors hover:border-[#da1a32]">
@@ -304,12 +329,12 @@ export function CreateNeeds() {
                   </div>
                   <div>
                     <p className="font-medium text-[#000000]">Upload a photo for this need</p>
-                    <p className="mt-1 text-sm text-gray-600">Use a clear image of the requested items, storage area, or delivery context.</p>
+                    <p className="mt-1 text-sm text-gray-600">Use one or more clear images of the requested items, storage area, or delivery context.</p>
                   </div>
                   <span className="rounded-lg border border-[#e5e5e5] px-4 py-2 text-sm font-medium text-[#000000]">
                     Choose Image
                   </span>
-                  <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={onNeedImageChange} />
+                  <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" onChange={onNeedImageChange} />
                 </label>
               )}
             </div>

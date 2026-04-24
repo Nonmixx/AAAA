@@ -7,8 +7,7 @@
 create policy organizations_public_read_for_active_listings
 on organizations for select
 using (
-  verification_status = 'approved'
-  and exists (
+  exists (
     select 1
     from needs n
     where n.organization_id = organizations.id
