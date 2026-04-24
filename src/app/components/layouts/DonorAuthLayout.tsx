@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Settings, LayoutDashboard, Sparkles, Search, MapPin, User, Zap, X } from 'lucide-react';
+import { Bell, Settings, LayoutDashboard, Sparkles, Search, MapPin, User, Zap, X, Waves } from 'lucide-react';
 import { useDonorContext } from '../../context/DonorContext';
 import {
   PortalSidebarLayout,
@@ -89,6 +89,7 @@ export function DonorAuthLayout({ children }: { children: React.ReactNode }) {
 
   const navigation: PortalSidebarItem[] = [
     { name: 'Dashboard', path: '/donor/dashboard', icon: LayoutDashboard },
+    { name: 'Disaster Relief', path: '/donor/disaster-relief', icon: Waves },
     { name: 'AI Donate', path: '/donor/donate', icon: Sparkles },
     { name: 'Browse Needs', path: '/donor/needs', icon: Search },
     { name: 'Track', path: '/donor/tracking', icon: MapPin },

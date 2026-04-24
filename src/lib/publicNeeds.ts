@@ -44,7 +44,7 @@ export type PublicNeedRow = {
   urgency: 'low' | 'medium' | 'high';
   is_emergency: boolean;
   needed_by: string | null;
-  image_url?: string | null;
+  image_url: string | null;
 };
 
 export type PublicOrganizationDetail = {
@@ -194,6 +194,12 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
   return cards;
 }
 
+type PublicNeedCandidate = PublicNeedWithOrganization | null;
+
+function isPublicNeedWithOrganization(need: PublicNeedCandidate): need is PublicNeedWithOrganization {
+  return need !== null;
+}
+
 export async function fetchPublicActiveNeeds(): Promise<PublicNeedWithOrganization[]> {
   const supabase = await getSupabaseServerClientOrNull();
   if (!supabase) return [];
@@ -230,7 +236,7 @@ export async function fetchPublicActiveNeeds(): Promise<PublicNeedWithOrganizati
 
   if (error || !data?.length) return [];
 
-  return (data as unknown as NeedWithOrgJoin[])
+  const mapped: PublicNeedCandidate[] = (data as unknown as NeedWithOrgJoin[])
     .map((row) => {
       const organization = (Array.isArray(row.organizations) ? row.organizations[0] : row.organizations) as
         | PublicOrganizationRow
@@ -260,8 +266,10 @@ export async function fetchPublicActiveNeeds(): Promise<PublicNeedWithOrganizati
           emergency_reason: organization.emergency_reason,
         },
       } satisfies PublicNeedWithOrganization;
-    })
-    .filter((need): need is PublicNeedWithOrganization => Boolean(need))
+    });
+
+  return mapped
+    .filter(isPublicNeedWithOrganization)
     .sort((a, b) =>
       compareNeedPriority(
         {

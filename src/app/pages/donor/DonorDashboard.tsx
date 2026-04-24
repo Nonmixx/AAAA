@@ -43,6 +43,7 @@ type NeedRecord = {
   quantity_requested: number;
   quantity_fulfilled: number;
   urgency: 'low' | 'medium' | 'high';
+  disaster_event_id?: string | null;
   organizations: NeedOrganization | NeedOrganization[] | null;
 };
 
@@ -194,15 +195,12 @@ export function DonorDashboard() {
       setUrgentNeedsLoading(true);
 
       try {
-        const supabase = getSupabaseBrowserClient();
-        const { data, error } = await supabase
-          .from('needs')
-          .select('id, title, category, quantity_requested, quantity_fulfilled, urgency, organizations(name, address, verification_status, is_emergency, emergency_reason)')
-          .eq('status', 'active')
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        setUrgentNeeds((data ?? []) as NeedRecord[]);
+        const response = await fetch('/api/donor/needs', { cache: 'no-store' });
+        const json = (await response.json()) as { needs?: NeedRecord[]; error?: string };
+        if (!response.ok) {
+          throw new Error(json.error || 'Unable to load urgent needs.');
+        }
+        setUrgentNeeds(json.needs ?? []);
       } catch {
         setUrgentNeeds([]);
       } finally {

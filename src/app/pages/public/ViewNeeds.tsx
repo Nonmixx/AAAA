@@ -265,6 +265,7 @@ export function ViewNeeds() {
           <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3">
             {filteredNeeds.map((need) => {
               const organization = getOrganizationRecord(need.organizations);
+              if (!organization) return null;
 
               const mediaSource = getNeedMediaSource(need.image_url, organization.logo_url);
               const imageUrl = getNeedDisplayImage(need.image_url, organization.logo_url);

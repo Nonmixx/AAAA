@@ -66,7 +66,7 @@ function getOrganizationNameFromAllocations(row: DonationHistoryRow) {
 }
 
 function formatDonationStatus(status: string) {
-  return status.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+  return status.replace(/_/g, ' ').replace(/\b\w/g, (char: string) => char.toUpperCase());
 }
 
 function getStatusBadge(status: string) {
@@ -302,7 +302,7 @@ export function DonorProfile() {
                       {donation.quantity_total} {donation.item_name}
                     </div>
                     <div className="text-sm text-gray-600">
-                      {getOrganizationNameFromAllocations(donation)} • {new Date(donation.created_at).toLocaleDateString('en-GB')}
+                      {getOrganizationNameFromAllocations(donation)} - {new Date(donation.created_at).toLocaleDateString('en-GB')}
                     </div>
                   </div>
                   <div className={`px-3 py-1 text-xs rounded-full border font-medium ${getStatusBadge(donation.status)}`}>

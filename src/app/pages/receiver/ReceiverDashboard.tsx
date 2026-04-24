@@ -24,13 +24,39 @@ type AllocationRow = {
   status: string;
   created_at: string;
   allocated_quantity: number;
-  donations: {
-    item_name: string;
-    profiles: {
-      full_name: string;
-    } | null;
-  } | null;
+  donations:
+    | {
+        item_name: string;
+        profiles: {
+          full_name: string;
+        } | null;
+      }
+    | {
+        item_name: string;
+        profiles: {
+          full_name: string;
+        }[];
+      }[]
+    | null;
 };
+
+function formatStatusLabel(status: string) {
+  return status.replace(/_/g, ' ');
+}
+
+function getAllocationDonorName(allocation: AllocationRow) {
+  if (Array.isArray(allocation.donations)) {
+    return allocation.donations[0]?.profiles?.[0]?.full_name ?? 'Donor';
+  }
+  return allocation.donations?.profiles?.full_name ?? 'Donor';
+}
+
+function getAllocationItemName(allocation: AllocationRow) {
+  if (Array.isArray(allocation.donations)) {
+    return allocation.donations[0]?.item_name ?? 'Items';
+  }
+  return allocation.donations?.item_name ?? 'Items';
+}
 
 export function ReceiverDashboard() {
   const [activeNeeds, setActiveNeeds] = useState(0);
@@ -85,7 +111,7 @@ export function ReceiverDashboard() {
         );
 
         setIncomingDonations(pendingOrInProgress.length);
-        setRecentDonations((allocations ?? []).slice(0, 5) as AllocationRow[]);
+        setRecentDonations(((allocations ?? []) as unknown as AllocationRow[]).slice(0, 5));
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load dashboard.');
       } finally {
@@ -201,7 +227,7 @@ export function ReceiverDashboard() {
                   <div className="mt-1 text-sm text-gray-600">
                     {need.quantity_requested} units requested
                     {need.needed_by && (
-                      <span> • Needed by {new Date(need.needed_by).toLocaleDateString('en-GB')}</span>
+                      <span> - Needed by {new Date(need.needed_by).toLocaleDateString('en-GB')}</span>
                     )}
                   </div>
                   <div className="mt-1 text-sm text-gray-600">
@@ -215,7 +241,7 @@ export function ReceiverDashboard() {
                       Posted {new Date(postedAt).toLocaleDateString('en-GB')}
                     </span>
                     <span className="rounded-full bg-white/70 px-2 py-1">
-                      Status: {need.status.replaceAll('_', ' ')}
+                      Status: {formatStatusLabel(need.status)}
                     </span>
                     <span className="rounded-full bg-white/70 px-2 py-1">
                       {need.quantity_fulfilled} fulfilled
@@ -254,12 +280,12 @@ export function ReceiverDashboard() {
               </div>
               <div className="flex-1">
                 <div className="font-medium text-[#000000]">
-                  {donation.allocated_quantity} {donation.donations?.item_name ?? 'Items'} from {donation.donations?.profiles?.full_name ?? 'Donor'}
+                  {donation.allocated_quantity} {getAllocationItemName(donation)} from {getAllocationDonorName(donation)}
                 </div>
                 <div className="text-sm text-gray-600">{new Date(donation.created_at).toLocaleDateString('en-GB')}</div>
               </div>
               <div className="rounded-full border border-yellow-100 bg-yellow-50 px-3 py-1 text-xs font-medium text-yellow-600">
-                {donation.status.replaceAll('_', ' ')}
+                {formatStatusLabel(donation.status)}
               </div>
             </div>
           ))}

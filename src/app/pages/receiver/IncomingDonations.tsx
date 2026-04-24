@@ -2,8 +2,6 @@
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { Package, User, Check, X, Clock, Camera, ShieldCheck, AlertCircle } from 'lucide-react';
-import { getSupabaseBrowserClient } from '@/lib/supabase/client';
-import { getCurrentReceiverContext } from '@/lib/supabase/receiver';
 
 type DonationStatus =
   | 'pending'
@@ -19,6 +17,8 @@ type Filter = 'all' | DonationStatus;
 
 type DonationCard = {
   id: string;
+  needId: string;
+  needTitle: string;
   status: DonationStatus;
   quantity: number;
   estimatedDelivery: string | null;
@@ -63,85 +63,13 @@ export function IncomingDonations() {
     setErrorMessage(null);
 
     try {
-      const supabase = getSupabaseBrowserClient();
-      const context = await getCurrentReceiverContext();
-
-      const { data: needs, error: needsError } = await supabase
-        .from('needs')
-        .select('id')
-        .eq('organization_id', context.organization.id);
-
-      if (needsError) throw needsError;
-
-      const needIds = (needs ?? []).map((n) => n.id);
-      if (needIds.length === 0) {
-        setDonations([]);
-        return;
+      const response = await fetch('/api/receiver/incoming', { cache: 'no-store' });
+      const json = (await response.json()) as { donations?: DonationCard[]; error?: string };
+      if (!response.ok) {
+        throw new Error(json.error || 'Unable to load donations.');
       }
 
-      const { data: allocations, error: allocationsError } = await supabase
-        .from('donation_allocations')
-        .select('id, status, allocated_quantity, estimated_delivery_date, donation_id')
-        .in('need_id', needIds)
-        .order('created_at', { ascending: false });
-
-      if (allocationsError) throw allocationsError;
-      if (!allocations || allocations.length === 0) {
-        setDonations([]);
-        return;
-      }
-
-      const donationIds = allocations.map((a) => a.donation_id);
-      const allocationIds = allocations.map((a) => a.id);
-
-      const { data: donationRows, error: donationError } = await supabase
-        .from('donations')
-        .select('id, item_name, donor_profile_id')
-        .in('id', donationIds);
-
-      if (donationError) throw donationError;
-
-      const donorIds = (donationRows ?? []).map((d) => d.donor_profile_id);
-      const { data: donorRows, error: donorError } = await supabase
-        .from('profiles')
-        .select('id, full_name')
-        .in('id', donorIds);
-
-      if (donorError) throw donorError;
-
-      const { data: proofRows, error: proofError } = await supabase
-        .from('delivery_proofs')
-        .select('allocation_id, image_url, proof_timestamp, location_text')
-        .in('allocation_id', allocationIds);
-
-      if (proofError) throw proofError;
-
-      const donationsMap = new Map((donationRows ?? []).map((d) => [d.id, d]));
-      const donorMap = new Map((donorRows ?? []).map((d) => [d.id, d.full_name]));
-      const proofMap = new Map((proofRows ?? []).map((p) => [p.allocation_id, p]));
-
-      const cards: DonationCard[] = allocations.map((row) => {
-        const donation = donationsMap.get(row.donation_id);
-        const proof = proofMap.get(row.id);
-
-        return {
-          id: row.id,
-          status: row.status as DonationStatus,
-          quantity: row.allocated_quantity,
-          estimatedDelivery: row.estimated_delivery_date,
-          itemName: donation?.item_name ?? 'Donation Item',
-          donorName: donorMap.get(donation?.donor_profile_id ?? '') ?? 'Donor',
-          proof: proof
-            ? {
-                imageUrl: proof.image_url,
-                timestamp: new Date(proof.proof_timestamp).toLocaleString('en-GB'),
-                location: proof.location_text ?? 'Unknown location',
-              }
-            : undefined,
-        };
-      });
-
-      setDonations(cards);
+      setDonations(json.donations ?? []);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to load donations.');
     } finally {
@@ -157,34 +85,15 @@ export function IncomingDonations() {
     setErrorMessage(null);
 
     try {
-      const supabase = getSupabaseBrowserClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      const { data: previous, error: previousError } = await supabase
-        .from('donation_allocations')
-        .select('donation_id, status')
-        .eq('id', id)
-        .single();
-
-      if (previousError) throw previousError;
-
-      const { error: updateError } = await supabase
-        .from('donation_allocations')
-        .update({ status })
-        .eq('id', id);
-
-      if (updateError) throw updateError;
-
-      await supabase.from('donation_events').insert({
-        donation_id: previous.donation_id,
-        allocation_id: id,
-        event_type: 'allocation_status_changed',
-        from_status: previous.status,
-        to_status: status,
-        actor_profile_id: user?.id ?? null,
+      const response = await fetch(`/api/receiver/incoming/${id}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
       });
+      const json = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(json.error || 'Unable to update status.');
+      }
 
       setDonations((prev) => prev.map((d) => (d.id === id ? { ...d, status } : d)));
     } catch (err) {
@@ -252,6 +161,9 @@ export function IncomingDonations() {
                       </div>
                       <div className="text-lg">
                         <span className="font-medium text-[#000000]">{donation.quantity} units</span>
+                      </div>
+                      <div className="mt-1 text-sm text-gray-500">
+                        For post: <span className="font-medium text-[#000000]">{donation.needTitle}</span>
                       </div>
                     </div>
                   </div>

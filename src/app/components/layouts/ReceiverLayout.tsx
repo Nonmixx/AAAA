@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Bell, LayoutDashboard, Plus, Inbox, User, X } from 'lucide-react';
+import { Bell, LayoutDashboard, Plus, Inbox, User, X, Waves } from 'lucide-react';
 import {
   PortalSidebarLayout,
   type PortalSidebarItem,
@@ -56,6 +56,7 @@ export function ReceiverLayout({ children }: { children: React.ReactNode }) {
 
   const navigation: PortalSidebarItem[] = [
     { name: 'Dashboard', path: '/receiver', icon: LayoutDashboard },
+    { name: 'Disaster Ops', path: '/receiver/disaster-ops', icon: Waves },
     { name: 'Create Need', path: '/receiver/create-needs', icon: Plus },
     { name: 'Incoming', path: '/receiver/incoming', icon: Inbox },
     { name: 'Profile', path: '/receiver/profile', icon: User },

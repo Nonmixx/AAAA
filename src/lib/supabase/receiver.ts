@@ -11,6 +11,9 @@ export type ReceiverOrganization = {
   contact_email?: string;
   contact_phone?: string | null;
   address?: string | null;
+  location_name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   description?: string | null;
   verification_status?: 'pending' | 'approved' | 'rejected';
   created_at?: string;
@@ -53,7 +56,7 @@ export async function getCurrentReceiverContext(): Promise<ReceiverContext> {
 
   const { data: ownedOrganization, error: ownedOrgError } = await supabase
     .from('organizations')
-    .select('id, owner_profile_id, name, logo_url, registration_number, contact_email, contact_phone, address, description, verification_status, created_at')
+    .select('id, owner_profile_id, name, logo_url, registration_number, contact_email, contact_phone, address, location_name, latitude, longitude, description, verification_status, created_at')
     .eq('owner_profile_id', user.id)
     .maybeSingle();
 
@@ -80,7 +83,7 @@ export async function getCurrentReceiverContext(): Promise<ReceiverContext> {
 
   const { data: organization, error: organizationError } = await supabase
     .from('organizations')
-    .select('id, owner_profile_id, name, logo_url, registration_number, contact_email, contact_phone, address, description, verification_status, created_at')
+    .select('id, owner_profile_id, name, logo_url, registration_number, contact_email, contact_phone, address, location_name, latitude, longitude, description, verification_status, created_at')
     .eq('id', membership.organization_id)
     .maybeSingle();
 

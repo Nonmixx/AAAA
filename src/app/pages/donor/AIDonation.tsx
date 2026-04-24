@@ -3,13 +3,17 @@ import Link from 'next/link';
 import {
   Sparkles, Send, ImagePlus, Bot, User, CheckCircle2,
   XCircle, Package, MapPin, Building2, Brain, RotateCcw, AlertCircle,
-  Mic, Paperclip, MicOff, Loader2, Scale,
+  Mic, Paperclip, MicOff, Loader2, Scale, Truck,
 } from 'lucide-react';
-import type { DonationPlanPayload, PlanReceiver } from '../../lib/donation-plan-types';
+import type { DeliveryPreference, DonationPlanPayload, PlanReceiver } from '../../lib/donation-plan-types';
 import type { DonationImageAnalysisResult, PhotoVerificationStatus } from '../../lib/donation-image-analysis';
 
 type Condition = 'Good' | 'Worn' | 'Damaged';
 type Stage = 'greeting' | 'details' | 'awaiting_image' | 'analyzing' | 'result_suitable' | 'result_unsuitable';
+
+function deliveryPreferenceLabel(preference: DeliveryPreference) {
+  return preference === 'self_delivery' ? 'Self delivery' : 'Platform delivery';
+}
 
 interface ChatMessage {
   id: string;
@@ -19,7 +23,7 @@ interface ChatMessage {
   type: 'text' | 'image' | 'analysis';
   condition?: Condition;
   suitable?: boolean;
-  /** Vision screening: unrelated photo vs wrong category vs OK. */
+  /** Photo screening: unrelated photo vs wrong category vs OK. */
   photoVerification?: PhotoVerificationStatus;
   /** Short model description of what appears in the image. */
   visibleSummary?: string;
@@ -95,7 +99,7 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-/** Downscale large photos before vision API (browser-only). */
+/** Downscale large photos before upload screening (browser-only). */
 async function prepareImageForAnalysis(file: File): Promise<{ base64: string; mimeType: string }> {
   if (!file.type.startsWith('image/')) {
     throw new Error('Only image files can be analyzed for donation items.');
@@ -157,7 +161,9 @@ function UserBubble({ children }: { children: React.ReactNode }) {
 }
 
 function matchedAgentHref(ngoId: string) {
-  return `/donor/needs/${encodeURIComponent(ngoId)}`;
+  const trimmed = ngoId.trim();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
+  return isUuid ? `/donor/needs/${encodeURIComponent(trimmed)}` : '/donor/needs';
 }
 
 /** Sidebar row: compact match card → receiver detail. */
@@ -317,6 +323,7 @@ export function AIDonation() {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [detectedItem, setDetectedItem] = useState('Clothing / Mixed Items');
+  const [deliveryPreference, setDeliveryPreference] = useState<DeliveryPreference>('platform_delivery');
   const [isRecording, setIsRecording] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null);
@@ -444,6 +451,7 @@ export function AIDonation() {
               transcript: transcriptRef.current.trim() || '(no text yet)',
               detectedItem: detectedItemRef.current,
               condition,
+              deliveryPreference,
             }),
           });
           const data = (await planRes.json()) as DonationPlanPayload;
@@ -460,7 +468,7 @@ export function AIDonation() {
       })();
       setTimeout(() => {
         addBotMessage(
-          `✅ Photo accepted: ${analysis.visibleSummary} Z.AI GLM is matching NGO demand, urgency, and split — your allocation appears below when ready.`,
+          `✅ Photo received: ${analysis.visibleSummary} Z.AI GLM is matching NGO demand, urgency, and split — your allocation appears below when ready.`,
         );
       }, 400);
     } catch {
@@ -559,6 +567,7 @@ export function AIDonation() {
           stage: nextStage,
           detectedItem: nextDetected,
           userLatest: userLine,
+          deliveryPreference,
         }),
       });
       const data = (await res.json()) as {
@@ -599,6 +608,7 @@ export function AIDonation() {
     setPendingImage(null);
     setPendingAttachFiles([]);
     setDetectedItem('Clothing / Mixed Items');
+    setDeliveryPreference('platform_delivery');
     setMessages([
       {
         id: '0',
@@ -764,11 +774,9 @@ export function AIDonation() {
             Chat with our AI to find the best match for your donation. Allocation planning uses{' '}
             <span className="text-[#000000] font-medium">Z.AI GLM</span> when{' '}
             <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_KEY</code> is set; otherwise a smart
-            on-device fallback runs. Item photos are checked with a{' '}
-            <span className="text-[#000000] font-medium">vision model</span> (
-            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_VISION_MODEL</code>, default{' '}
-            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">glm-4v-plus</code>) so unrelated or mismatched
-            images are rejected.
+            fallback runs. Item photos are currently handled in{' '}
+            <span className="text-[#000000] font-medium">fallback review mode</span>, so donors may be asked to describe
+            item condition in chat or resend a clearer single-item photo.
           </p>
         </div>
         <button
@@ -822,6 +830,42 @@ export function AIDonation() {
                 <p className="text-sm font-medium text-[#000000] mt-0.5">{stageSummaryLabel}</p>
               </div>
 
+              <div>
+                <span className="text-xs text-gray-500 uppercase tracking-wide">Delivery</span>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryPreference('self_delivery')}
+                    className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                      deliveryPreference === 'self_delivery'
+                        ? 'border-[#da1a32] bg-red-50 text-[#000000]'
+                        : 'border-[#e5e5e5] bg-white text-gray-600 hover:border-[#da1a32]/40'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <User className="w-3.5 h-3.5" />
+                      Self delivery
+                    </div>
+                    <p className="mt-1 text-[10px] leading-snug">You handle drop-off or handoff yourself.</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryPreference('platform_delivery')}
+                    className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                      deliveryPreference === 'platform_delivery'
+                        ? 'border-[#da1a32] bg-red-50 text-[#000000]'
+                        : 'border-[#e5e5e5] bg-white text-gray-600 hover:border-[#da1a32]/40'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <Truck className="w-3.5 h-3.5" />
+                      Platform delivery
+                    </div>
+                    <p className="mt-1 text-[10px] leading-snug">Platform coordinates the delivery route.</p>
+                  </button>
+                </div>
+              </div>
+
               {!lastAnalysis ? (
                 <>
                   <div className="rounded-xl border border-dashed border-[#e5e5e5] bg-[#edf2f4]/30 p-4 text-center">
@@ -835,6 +879,7 @@ export function AIDonation() {
                       <span className="font-medium text-gray-600">Item (preview)</span>
                     </div>
                     <p className="text-xs font-medium text-[#000000] mt-1">{detectedItem}</p>
+                    <p className="text-[10px] text-gray-500 mt-2">Delivery: {deliveryPreferenceLabel(deliveryPreference)}</p>
                   </div>
                   {sidebarMatchedAgents && sidebarMatchedAgents.length > 0 ? (
                     <div>
@@ -1269,6 +1314,9 @@ export function AIDonation() {
                 <span className="font-semibold text-[#000000]">Structured plan</span>
                 <span className="rounded-full bg-[#edf2f4] px-2 py-0.5 border border-[#e5e5e5]">
                   {glmPlan.source === 'glm' ? `Z.AI · ${glmPlan.model}` : 'Fallback engine'}
+                </span>
+                <span className="rounded-full bg-[#edf2f4] px-2 py-0.5 border border-[#e5e5e5]">
+                  {deliveryPreferenceLabel(deliveryPreference)}
                 </span>
               </div>
               {glmPlan.donorIntent ? (

@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { NGO_DEMAND_CATALOG } from '../../../lib/ngos-demand-catalog';
 import { getTopMatchedReceivers } from '../../../lib/match-donation-ngos';
-import type { PlanReceiver } from '../../../lib/donation-plan-types';
+import type { DeliveryPreference, PlanReceiver } from '../../../lib/donation-plan-types';
+import { getLiveMatchedReceivers } from '@/lib/disaster/liveDonationMatching';
 
 const DEFAULT_BASE = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_MODEL = 'glm-4-flash';
+const DEFAULT_MODEL = 'ilmu-glm-5.1';
 
 type ApiMsg = { role: 'user' | 'assistant'; content: string };
 
@@ -13,6 +14,11 @@ interface ChatBody {
   stage: string;
   detectedItem: string;
   userLatest?: string;
+  deliveryPreference?: DeliveryPreference;
+}
+
+function deliveryPreferenceLabel(preference?: DeliveryPreference): string {
+  return preference === 'self_delivery' ? 'Self delivery' : 'Platform delivery';
 }
 
 function lastUserContent(messages: ApiMsg[]): string {
@@ -22,50 +28,61 @@ function lastUserContent(messages: ApiMsg[]): string {
   return '';
 }
 
-function chatContextTranscript(messages: ApiMsg[], userLatest: string, detectedItem: string): string {
+function chatContextTranscript(
+  messages: ApiMsg[],
+  userLatest: string,
+  detectedItem: string,
+  deliveryPreference?: DeliveryPreference,
+): string {
   const recentUsers = messages
-    .filter((m) => m.role === 'user')
+    .filter((message) => message.role === 'user')
     .slice(-8)
-    .map((m) => m.content.trim())
+    .map((message) => message.content.trim())
     .filter(Boolean);
   const tail = recentUsers.length ? recentUsers.join('\n') : userLatest;
-  return `${tail}\n[Detected category: ${detectedItem}]`;
+  return `${tail}\n[Detected category: ${detectedItem}]\n[Delivery preference: ${deliveryPreferenceLabel(deliveryPreference)}]`;
 }
 
 function appendMatchedAgentsHint(reply: string, agents: PlanReceiver[]): string {
   const [a, b] = agents;
   if (!a) return reply;
   if (!b || a.ngoId === b.ngoId) {
-    return `${reply}\n\n**Matched donation agents:** ${a.name} (${a.percent}%) — suggested item-donation routing for this demo catalog.`;
+    return `${reply}\n\n**Matched donation agents:** ${a.name} (${a.percent}%) - suggested item-donation routing from current demand data.`;
   }
-  return `${reply}\n\n**Matched donation agents:** ${a.name} (${a.percent}%) · ${b.name} (${b.percent}%) — suggested item-donation routing for this demo catalog.`;
+  return `${reply}\n\n**Matched donation agents:** ${a.name} (${a.percent}%) · ${b.name} (${b.percent}%) - suggested item-donation routing from current demand data.`;
 }
 
 function jsonSafeMatchedAgents(agents: PlanReceiver[]) {
-  return agents.map((r) => ({
-    name: r.name,
-    ngoId: r.ngoId,
-    allocationPercent: r.percent,
-    urgency: r.urgency,
-    location: r.location,
-    reasons: r.reason,
-    matchContext: r.matchContext,
+  return agents.map((receiver) => ({
+    name: receiver.name,
+    ngoId: receiver.ngoId,
+    allocationPercent: receiver.percent,
+    urgency: receiver.urgency,
+    location: receiver.location,
+    reasons: receiver.reason,
+    matchContext: receiver.matchContext,
   }));
 }
 
-function fallbackReply(stage: string, detectedItem: string): string {
-  const ngos = NGO_DEMAND_CATALOG.map((n) => n.name).join(', ');
+function fallbackReply(stage: string, detectedItem: string, deliveryPreference?: DeliveryPreference): string {
+  const ngos = NGO_DEMAND_CATALOG.map((ngo) => ngo.name).join(', ');
+  const deliveryLine = `Current delivery choice: ${deliveryPreferenceLabel(deliveryPreference)}.`;
 
   if (stage === 'greeting') {
-    return `Hi! I can help you donate **physical items** and match them to NGO demand. Tell me what items you want to donate (e.g. clothing, food packs, books), and your area. Partners include: ${ngos}.`;
+    return `Hi! I can help you donate **physical items** and match them to current receiver demand. Tell me what items you want to donate (for example: clothing, food packs, books), and your area. Example partners include: ${ngos}.\n\n${deliveryLine}`;
   }
   if (stage === 'details') {
-    return `Thanks — I’ve noted your donation focus as “${detectedItem}”.\n\nTo proceed with item donation, please share:\n• Rough quantity or number of boxes\n• Pickup or drop-off area\n• Timing constraints\n\nWhen ready, upload a clear item photo and press **Send** (nothing is uploaded until Send).`;
+    return `Thanks - I've noted your donation focus as "${detectedItem}".\n\n${deliveryLine}\n\nTo proceed with item donation, please share:\n- Rough quantity or number of boxes\n- Pickup or drop-off area\n- Timing constraints\n\nWhen ready, upload a clear item photo and press **Send** (nothing is uploaded until Send).`;
   }
   if (stage === 'awaiting_image') {
-    return `I’m ready to screen **item condition** once I have a photo.\n\n1) Tap the image button and select one clear photo.\n2) Add an optional caption.\n3) Press **Send** to run analysis.\n\nNeed guidance? I can suggest suitable NGOs after screening.`;
+    return `I'm ready to screen **item condition** once I have a photo.\n\n${deliveryLine}\n\n1) Tap the image button and select one clear photo.\n2) Add an optional caption.\n3) Press **Send** to run analysis.\n\nNeed guidance? I can suggest suitable organizations after screening.`;
   }
-  return 'How can I help with your item donation next?';
+  return `${deliveryLine}\n\nHow can I help with your item donation next?`;
+}
+
+async function getMatchedAgents(transcript: string, detectedItem: string, userLatest: string) {
+  return (await getLiveMatchedReceivers(transcript, detectedItem)) ??
+    getTopMatchedReceivers(transcript, detectedItem, undefined, userLatest);
 }
 
 export async function POST(req: Request) {
@@ -75,6 +92,7 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+
   if (!Array.isArray(body.messages) || typeof body.stage !== 'string') {
     return NextResponse.json({ error: 'messages[] and stage required' }, { status: 400 });
   }
@@ -86,11 +104,11 @@ export async function POST(req: Request) {
       ? body.userLatest.trim()
       : lastUserContent(body.messages);
 
-  const matchTranscript = chatContextTranscript(body.messages, userLatest, detectedItem);
-  const matchedAgents = getTopMatchedReceivers(matchTranscript, detectedItem, undefined, userLatest);
+  const matchTranscript = chatContextTranscript(body.messages, userLatest, detectedItem, body.deliveryPreference);
+  const matchedAgents = await getMatchedAgents(matchTranscript, detectedItem, userLatest);
 
   if (!apiKey) {
-    const reply = appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents);
+    const reply = appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem, body.deliveryPreference), matchedAgents);
     return NextResponse.json({
       reply,
       matchedAgents,
@@ -102,44 +120,42 @@ export async function POST(req: Request) {
   const model = process.env.GLM_MODEL?.trim() || DEFAULT_MODEL;
   const url = `${base}/chat/completions`;
 
-  const catalogBrief = NGO_DEMAND_CATALOG.map(
-    (n) => `- ${n.name} (${n.id}): ${n.demandCategories.join(', ')}; urgency ${n.urgencyLabel}; ${n.currentGap}`,
-  ).join('\n');
-
   const matchedJson = JSON.stringify(jsonSafeMatchedAgents(matchedAgents), null, 0);
 
   const system = `You are **DonateAI Assistant** for **physical item donations only** (no money/pledge flow).
 
 ## Core behavior
 - Understand donor intent for **items** (what item, condition expectation, quantity, area, timing).
-- Guide donor through item workflow: clarify details -> ask for photo when needed -> explain matched NGOs.
-- Do not discuss cash/monetary/e-wallet paths.
+- Guide donor through item workflow: clarify details -> ask for photo when needed -> explain matched organizations.
+- Do not discuss cash or e-wallet flows.
 
 ## Item-donation guidance
-- If user intent is vague, ask 1-2 short clarifying questions about item type + quantity + location.
+- If user intent is vague, ask 1-2 short clarifying questions about item type, quantity, and location.
 - Keep guidance practical and concise.
-- Mention that photos are submitted only after user presses Send.
+- Mention that photos are submitted only after the user presses Send.
+- Respect the donor's delivery choice. If they chose self delivery, talk in terms of donor drop-off or handoff. If they chose platform delivery, talk in terms of platform-coordinated delivery without promising guaranteed pickup times.
 
-## Matched donation agents (required)
+## Matched donation agents
 - After donor describes items, reference matched agents from JSON.
-- Name at least the first NGO and explain why it fits the item and urgency.
-- Keep recommendations grounded in catalog facts only.
+- Name at least the first organization and explain why it fits the item and urgency.
+- Keep recommendations grounded in the matched JSON only.
 
 MATCHED_DONATION_AGENTS_JSON:
 ${matchedJson}
 
 ## Accuracy
 - Do not invent pickup guarantees, tax receipts, or unavailable services.
-- NGO facts must come only from this catalog:
-${catalogBrief}
+- If the matched JSON appears to come from live needs, speak in terms of current active needs.
+- If the matched JSON appears to come from the fallback catalog, treat it as a best-effort fallback.
 
 ## Style
-- Under ~220 words unless user asks for detail.
+- Under ~220 words unless the user asks for detail.
 - Plain text, short paragraphs or bullets.
 
 STAGE=${body.stage}
 DETECTED_ITEM_CATEGORY=${detectedItem}
-LATEST_USER_MESSAGE=${userLatest}`;
+LATEST_USER_MESSAGE=${userLatest}
+DELIVERY_PREFERENCE=${deliveryPreferenceLabel(body.deliveryPreference)}`;
 
   const recentMessages = body.messages.slice(-20);
 
@@ -158,10 +174,10 @@ LATEST_USER_MESSAGE=${userLatest}`;
     });
 
     if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      console.error('GLM chat error', res.status, t);
+      const text = await res.text().catch(() => '');
+      console.error('GLM chat error', res.status, text);
       return NextResponse.json({
-        reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents),
+        reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem, body.deliveryPreference), matchedAgents),
         matchedAgents,
         source: 'fallback',
       });
@@ -171,16 +187,17 @@ LATEST_USER_MESSAGE=${userLatest}`;
     const reply = data.choices?.[0]?.message?.content?.trim();
     if (!reply) {
       return NextResponse.json({
-        reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents),
+        reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem, body.deliveryPreference), matchedAgents),
         matchedAgents,
         source: 'fallback',
       });
     }
+
     return NextResponse.json({ reply, matchedAgents, source: 'glm' });
-  } catch (e) {
-    console.error('donation-assistant/chat', e);
+  } catch (error) {
+    console.error('donation-assistant/chat', error);
     return NextResponse.json({
-      reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem), matchedAgents),
+      reply: appendMatchedAgentsHint(fallbackReply(body.stage, detectedItem, body.deliveryPreference), matchedAgents),
       matchedAgents,
       source: 'fallback',
     });

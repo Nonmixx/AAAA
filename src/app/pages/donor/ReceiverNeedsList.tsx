@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Building2, MapPin, Package, AlertCircle, Zap, ImageIcon } from 'lucide-react';
-import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { useDonorContext } from '../../context/DonorContext';
 import {
   getNeedDisplayImage,
@@ -124,15 +123,12 @@ export function ReceiverNeedsList() {
       setErrorMessage(null);
 
       try {
-        const supabase = getSupabaseBrowserClient();
-        const { data, error } = await supabase
-          .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(id, name, address, logo_url, verification_status, is_emergency, emergency_reason)')
-          .eq('status', 'active')
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        setNeeds((data ?? []) as NeedRecord[]);
+        const response = await fetch('/api/donor/needs', { cache: 'no-store' });
+        const json = (await response.json()) as { needs?: NeedRecord[]; error?: string };
+        if (!response.ok) {
+          throw new Error(json.error || 'Unable to load receiver needs.');
+        }
+        setNeeds(json.needs ?? []);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load receiver needs.');
       } finally {
@@ -316,7 +312,7 @@ export function ReceiverNeedsList() {
 
                   <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
                     <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium">
-                      View Details ->
+                      View Details {'->'}
                     </div>
                   </div>
                 </div>

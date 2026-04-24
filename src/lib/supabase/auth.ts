@@ -83,7 +83,11 @@ export async function resolveAuthenticatedRoute(preferredRole?: AppRole) {
     return '/corporate/dashboard';
   }
 
-  if (role === 'receiver' || role === 'admin') {
+  if (role === 'admin') {
+    return '/admin/disasters';
+  }
+
+  if (role === 'receiver') {
     try {
       await getCurrentReceiverContext();
       return '/receiver';

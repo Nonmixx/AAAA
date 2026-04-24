@@ -1,6 +1,6 @@
 import type { ItemCondition } from './donation-plan-types';
 
-/** Result of vision (or fallback) screening of a donor-submitted item photo. */
+/** Result of screening of a donor-submitted item photo. */
 export type PhotoVerificationStatus = 'passed' | 'not_a_donation_photo' | 'wrong_item_for_category';
 
 export interface DonationImageAnalysisResult {
@@ -10,7 +10,7 @@ export interface DonationImageAnalysisResult {
   visibleSummary: string;
   /** Shown to donor when verification !== passed or when condition is Damaged context. */
   guidance: string;
-  source: 'glm-vision' | 'fallback';
+  source: 'fallback';
 }
 
 export function normalizeCondition(x: string): ItemCondition {

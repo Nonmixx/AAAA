@@ -1,5 +1,6 @@
 export type PlanUrgency = 'High' | 'Medium' | 'Low';
 export type ItemCondition = 'Good' | 'Worn' | 'Damaged';
+export type DeliveryPreference = 'platform_delivery' | 'self_delivery';
 
 export type ReceiverMatchContext = 'monetary' | 'in_kind';
 
@@ -30,4 +31,5 @@ export interface PlanRequestBody {
   transcript: string;
   detectedItem: string;
   condition: ItemCondition;
+  deliveryPreference?: DeliveryPreference;
 }

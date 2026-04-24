@@ -2,10 +2,15 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'next/navigation';
-import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart, ImageIcon } from 'lucide-react';
-import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { useParams, useRouter } from 'next/navigation';
+import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart, ImageIcon, Truck, User } from 'lucide-react';
 import { getNeedDisplayImage, getNeedMediaSource, getOrganizationInitials } from '@/lib/media';
+
+type DeliveryMethod = 'platform_delivery' | 'self_delivery';
+
+function deliveryMethodLabel(method: DeliveryMethod) {
+  return method === 'self_delivery' ? 'Self drop' : 'Platform delivery';
+}
 
 type OrganizationRecord = {
   id: string;
@@ -87,31 +92,40 @@ function getVerificationBadge(status: OrganizationRecord['verification_status'])
 }
 
 export function ReceiverDetail() {
+  const router = useRouter();
   const { id } = useParams();
   const needId = Array.isArray(id) ? id[0] : id;
+  const stableNeedId = typeof needId === 'string' ? needId : '';
   const [need, setNeed] = useState<NeedRecord | null>(null);
   const [organizationNeeds, setOrganizationNeeds] = useState<NeedRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [donationItemName, setDonationItemName] = useState('');
+  const [donationQuantity, setDonationQuantity] = useState('1');
+  const [donationDescription, setDonationDescription] = useState('');
+  const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>('platform_delivery');
+  const [submittingDonation, setSubmittingDonation] = useState(false);
+  const [donationSuccessMessage, setDonationSuccessMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const loadNeedDetails = async () => {
-      if (!needId) return;
+      if (!stableNeedId) return;
 
       setLoading(true);
       setErrorMessage(null);
 
       try {
-        const supabase = getSupabaseBrowserClient();
-        const { data, error } = await supabase
-          .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(id, name, address, description, contact_email, contact_phone, logo_url, verification_status, is_emergency, emergency_reason)')
-          .eq('id', needId)
-          .maybeSingle();
+        const response = await fetch(`/api/donor/needs/${stableNeedId}`, { cache: 'no-store' });
+        const json = (await response.json()) as {
+          need?: NeedRecord | null;
+          organizationNeeds?: NeedRecord[];
+          error?: string;
+        };
+        if (!response.ok) {
+          throw new Error(json.error || 'Unable to load need details.');
+        }
 
-        if (error) throw error;
-
-        const needRecord = (data ?? null) as NeedRecord | null;
+        const needRecord = json.need ?? null;
         const organization = getOrganizationRecord(needRecord?.organizations ?? null);
         if (!needRecord || !organization) {
           setErrorMessage('Need not found.');
@@ -119,16 +133,10 @@ export function ReceiverDetail() {
         }
 
         setNeed(needRecord);
-
-        const { data: siblingNeeds, error: siblingNeedsError } = await supabase
-          .from('needs')
-          .select('id, title, description, category, image_url, quantity_requested, quantity_fulfilled, urgency, organizations(id, name, address, description, contact_email, contact_phone, logo_url, verification_status, is_emergency, emergency_reason)')
-          .eq('organization_id', organization.id)
-          .eq('status', 'active')
-          .order('created_at', { ascending: false });
-
-        if (siblingNeedsError) throw siblingNeedsError;
-        setOrganizationNeeds((siblingNeeds ?? []) as NeedRecord[]);
+        const remaining = Math.max(0, needRecord.quantity_requested - needRecord.quantity_fulfilled);
+        setDonationItemName(needRecord.title);
+        setDonationQuantity(String(remaining > 0 ? Math.min(remaining, 1) : 1));
+        setOrganizationNeeds(json.organizationNeeds ?? []);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load need details.');
       } finally {
@@ -137,7 +145,7 @@ export function ReceiverDetail() {
     };
 
     void loadNeedDetails();
-  }, [needId]);
+  }, [stableNeedId]);
 
   const organization = useMemo(() => getOrganizationRecord(need?.organizations ?? null), [need]);
   const currentVisualUrl = useMemo(() => {
@@ -152,6 +160,51 @@ export function ReceiverDetail() {
     () => (organization ? getVerificationBadge(organization.verification_status) : null),
     [organization],
   );
+  const remainingQuantity = useMemo(
+    () => (need ? Math.max(0, need.quantity_requested - need.quantity_fulfilled) : 0),
+    [need],
+  );
+
+  const handleDonateNow = async () => {
+    if (!need) return;
+    setErrorMessage(null);
+    setDonationSuccessMessage(null);
+
+    const quantity = Number(donationQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setErrorMessage('Please enter a donation quantity greater than 0.');
+      return;
+    }
+
+    setSubmittingDonation(true);
+    try {
+      const response = await fetch('/api/donations/from-need', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          needId: need.id,
+          itemName: donationItemName.trim() || need.title,
+          quantity,
+          description: donationDescription.trim() || undefined,
+          deliveryMethod,
+        }),
+      });
+      const json = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) {
+        throw new Error(json.error || 'Unable to submit donation.');
+      }
+
+      setDonationSuccessMessage(
+        json.message || 'Donation submitted successfully. The receiver can now review it in Incoming Donations.',
+      );
+      router.push('/donor/tracking');
+      router.refresh();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Unable to submit donation.');
+    } finally {
+      setSubmittingDonation(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -305,14 +358,98 @@ export function ReceiverDetail() {
             <p className="text-white opacity-80 text-sm mb-6">
               {organization.is_emergency && organization.emergency_reason
                 ? organization.emergency_reason
-                : `${need.title} currently needs ${Math.max(0, need.quantity_requested - need.quantity_fulfilled)} more units.`}
+                : `${need.title} currently needs ${remainingQuantity} more units.`}
             </p>
-            <Link href="/donor/donate">
-              <button className="w-full bg-white text-[#da1a32] py-3 rounded-xl hover:bg-[#edf2f4] transition-all mb-3 shadow-sm font-medium">
-                Donate Now
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-white/80">Item Name</label>
+                <input
+                  value={donationItemName}
+                  onChange={(event) => setDonationItemName(event.target.value)}
+                  className="w-full rounded-xl border border-white/20 bg-white/95 px-4 py-3 text-sm text-[#000000] outline-none focus:ring-2 focus:ring-white/60"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-white/80">Quantity You Can Donate</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={Math.max(1, remainingQuantity)}
+                  value={donationQuantity}
+                  onChange={(event) => setDonationQuantity(event.target.value)}
+                  className="w-full rounded-xl border border-white/20 bg-white/95 px-4 py-3 text-sm text-[#000000] outline-none focus:ring-2 focus:ring-white/60"
+                />
+                <p className="mt-1 text-[11px] text-white/70">Remaining unmet quantity: {remainingQuantity}</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-white/80">Notes (Optional)</label>
+                <textarea
+                  value={donationDescription}
+                  onChange={(event) => setDonationDescription(event.target.value)}
+                  rows={3}
+                  placeholder="Add any packing or delivery note for the receiver."
+                  className="w-full rounded-xl border border-white/20 bg-white/95 px-4 py-3 text-sm text-[#000000] outline-none focus:ring-2 focus:ring-white/60"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-white/80">Delivery Option</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryMethod('self_delivery')}
+                    className={`rounded-xl border px-3 py-3 text-left transition-all ${
+                      deliveryMethod === 'self_delivery'
+                        ? 'border-white bg-white text-[#000000]'
+                        : 'border-white/25 bg-white/10 text-white hover:bg-white/15'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <User className="h-3.5 w-3.5" />
+                      Self drop
+                    </div>
+                    <p className={`mt-1 text-[10px] leading-snug ${deliveryMethod === 'self_delivery' ? 'text-gray-600' : 'text-white/75'}`}>
+                      You bring the items yourself to the receiver.
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryMethod('platform_delivery')}
+                    className={`rounded-xl border px-3 py-3 text-left transition-all ${
+                      deliveryMethod === 'platform_delivery'
+                        ? 'border-white bg-white text-[#000000]'
+                        : 'border-white/25 bg-white/10 text-white hover:bg-white/15'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <Truck className="h-3.5 w-3.5" />
+                      Platform delivery
+                    </div>
+                    <p className={`mt-1 text-[10px] leading-snug ${deliveryMethod === 'platform_delivery' ? 'text-gray-600' : 'text-white/75'}`}>
+                      Platform coordinates the delivery handoff.
+                    </p>
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-white/70">Selected: {deliveryMethodLabel(deliveryMethod)}</p>
+              </div>
+              <button
+                onClick={() => void handleDonateNow()}
+                disabled={submittingDonation || remainingQuantity <= 0}
+                className="w-full bg-white text-[#da1a32] py-3 rounded-xl hover:bg-[#edf2f4] transition-all shadow-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submittingDonation ? 'Submitting...' : 'Donate This Need'}
               </button>
-            </Link>
-            <div className="text-center text-sm text-white opacity-80">Or browse other organizations</div>
+              <Link href="/donor/donate">
+                <button className="w-full rounded-xl border border-white/25 px-4 py-3 text-sm font-medium text-white hover:bg-white/10 transition-all">
+                  Open AI Donate Instead
+                </button>
+              </Link>
+            </div>
+            {donationSuccessMessage && (
+              <div className="mt-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                {donationSuccessMessage}
+              </div>
+            )}
+            <div className="mt-4 text-center text-sm text-white opacity-80">This creates a pending donation for receiver review.</div>
           </div>
         </div>
       </div>
