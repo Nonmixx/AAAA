@@ -1,11 +1,83 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
-import { Building2, Wallet, Save, Upload, CreditCard, Target } from 'lucide-react';
+import {
+  Building2,
+  Wallet,
+  Save,
+  Upload,
+  CreditCard,
+  Target,
+  X,
+  CheckCircle2,
+  Loader2,
+  Landmark,
+  Smartphone,
+  History,
+} from 'lucide-react';
 import { getCorporateMemory, saveCorporateMemory } from '../../../lib/corporate-ai-engine';
 
 type ProfileTab = 'details' | 'wallet';
+type TopUpStep = 'amount' | 'gateway' | 'processing' | 'success';
+type PayMethodId = 'fpx' | 'card' | 'duitnow';
+
+type WalletTransaction = {
+  id: string;
+  /** ISO timestamp for sorting and display */
+  occurredAtIso: string;
+  kind: 'top_up';
+  amountRm: number;
+  balanceAfterRm: number;
+  paymentMethod: PayMethodId;
+  reference: string;
+};
+
+const TOP_UP_PRESETS = [500, 1000, 2000, 5000] as const;
+
+function formatWalletTxDate(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-MY', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function parseWalletTransactionsFromStorage(raw: unknown): WalletTransaction[] {
+  if (!Array.isArray(raw)) return [];
+  const out: WalletTransaction[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const o = row as Record<string, unknown>;
+    if (o.kind !== 'top_up') continue;
+    const id = typeof o.id === 'string' ? o.id : '';
+    const occurredAtIso = typeof o.occurredAtIso === 'string' ? o.occurredAtIso : '';
+    const amountRm = Number(o.amountRm);
+    const balanceAfterRm = Number(o.balanceAfterRm);
+    const pm = o.paymentMethod;
+    const ref = typeof o.reference === 'string' ? o.reference : '';
+    if (!id || !occurredAtIso || !Number.isFinite(amountRm) || !ref) continue;
+    if (pm !== 'fpx' && pm !== 'card' && pm !== 'duitnow') continue;
+    out.push({
+      id,
+      occurredAtIso,
+      kind: 'top_up',
+      amountRm,
+      balanceAfterRm: Number.isFinite(balanceAfterRm) ? balanceAfterRm : 0,
+      paymentMethod: pm,
+      reference: ref,
+    });
+  }
+  return out;
+}
 
 const SDG_OPTIONS = [
   { id: 'sdg1', label: 'SDG 1: No Poverty' },
@@ -31,6 +103,15 @@ export default function CorporateProfilePage() {
   const [primaryFocus, setPrimaryFocus] = useState('sdg4');
   const [secondaryFocus, setSecondaryFocus] = useState('sdg1');
   const [saveNote, setSaveNote] = useState('');
+  const [topUpOpen, setTopUpOpen] = useState(false);
+  const [topUpStep, setTopUpStep] = useState<TopUpStep>('amount');
+  const [topUpPreset, setTopUpPreset] = useState<number | 'custom'>(1000);
+  const [topUpCustomRm, setTopUpCustomRm] = useState('');
+  const [payMethod, setPayMethod] = useState<PayMethodId>('fpx');
+  const [lastTopUpRm, setLastTopUpRm] = useState(0);
+  const [lastTopUpRef, setLastTopUpRef] = useState('');
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const toggleSdg = (id: string) => {
     setSelectedSdgs((prev) => {
@@ -54,6 +135,8 @@ export default function CorporateProfilePage() {
           autoTopUp?: boolean;
           primaryFocus?: string;
           secondaryFocus?: string;
+          walletBalance?: string | number;
+          walletTransactions?: unknown;
         };
         setCompanyName(parsed.companyName ?? 'Apex Manufacturing Berhad');
         setIndustry(parsed.industry ?? 'Manufacturing & Consumer Goods');
@@ -62,6 +145,11 @@ export default function CorporateProfilePage() {
         setAutoTopUp(parsed.autoTopUp ?? true);
         setPrimaryFocus(parsed.primaryFocus ?? 'sdg4');
         setSecondaryFocus(parsed.secondaryFocus ?? 'sdg1');
+        if (parsed.walletBalance != null && parsed.walletBalance !== '') {
+          const n = Number(parsed.walletBalance);
+          setWalletBalance(Number.isFinite(n) ? n.toFixed(2) : '5000.00');
+        }
+        setWalletTransactions(parseWalletTransactionsFromStorage(parsed.walletTransactions));
       } catch {
         // no-op
       }
@@ -84,15 +172,99 @@ export default function CorporateProfilePage() {
     reader.readAsDataURL(file);
   };
 
-  const topUpBalance = () => {
-    const raw = window.prompt('Enter top-up amount (RM):', '1000');
-    if (!raw) return;
-    const amount = Number(raw);
-    if (!Number.isFinite(amount) || amount <= 0) return;
-    const current = Number(walletBalance) || 0;
-    const next = (current + amount).toFixed(2);
-    setWalletBalance(next);
-    setSaveNote(`Wallet topped up by RM ${amount.toFixed(2)}.`);
+  const readProfileStorage = (): Record<string, unknown> => {
+    try {
+      const raw = window.localStorage.getItem('corporate_profile_v1');
+      if (!raw) return {};
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+
+  const persistTopUpWithTransaction = (nextBalanceStr: string, tx: WalletTransaction) => {
+    const prev = readProfileStorage();
+    const existing = parseWalletTransactionsFromStorage(prev.walletTransactions);
+    const nextList = [tx, ...existing].slice(0, 200);
+    window.localStorage.setItem(
+      'corporate_profile_v1',
+      JSON.stringify({
+        ...prev,
+        walletBalance: nextBalanceStr,
+        walletTransactions: nextList,
+      }),
+    );
+    setWalletTransactions(nextList);
+  };
+
+  const resolveTopUpAmountRm = (): number | null => {
+    if (topUpPreset === 'custom') {
+      const n = Number(topUpCustomRm.replace(/,/g, '').trim());
+      if (!Number.isFinite(n) || n <= 0 || n > 500_000) return null;
+      return Math.round(n * 100) / 100;
+    }
+    return topUpPreset;
+  };
+
+  const openTopUpModal = () => {
+    setTopUpStep('amount');
+    setTopUpPreset(1000);
+    setTopUpCustomRm('');
+    setPayMethod('fpx');
+    setLastTopUpRm(0);
+    setLastTopUpRef('');
+    setTopUpOpen(true);
+  };
+
+  const closeTopUpModal = () => {
+    setTopUpOpen(false);
+    setTopUpStep('amount');
+  };
+
+  const goToPaymentGateway = () => {
+    const amt = resolveTopUpAmountRm();
+    if (amt == null) {
+      window.alert('Enter a valid amount between RM 0.01 and RM 500,000.');
+      return;
+    }
+    setTopUpStep('gateway');
+  };
+
+  const submitTopUpPayment = () => {
+    const amt = resolveTopUpAmountRm();
+    if (amt == null) return;
+    setTopUpStep('processing');
+    window.setTimeout(() => {
+      const current = Number(walletBalance) || 0;
+      const next = (current + amt).toFixed(2);
+      const ref = `TOPUP-${Date.now().toString(36).toUpperCase()}`;
+      const tx: WalletTransaction = {
+        id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : ref,
+        occurredAtIso: new Date().toISOString(),
+        kind: 'top_up',
+        amountRm: amt,
+        balanceAfterRm: Number(next),
+        paymentMethod: payMethod,
+        reference: ref,
+      };
+      setWalletBalance(next);
+      setLastTopUpRm(amt);
+      setLastTopUpRef(ref);
+      persistTopUpWithTransaction(next, tx);
+      const parsed = Number(next.replace(/[^0-9.]/g, ''));
+      saveCorporateMemory({
+        targetSdgs: selectedSdgs,
+        logisticsWalletBalance: Number.isFinite(parsed) ? parsed : 0,
+      });
+      setSaveNote(`Top-up successful. RM ${amt.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} added to your wallet.`);
+      setTopUpStep('success');
+    }, 1600);
+  };
+
+  const payMethodLabel = (id: PayMethodId) => {
+    if (id === 'fpx') return 'FPX (Malaysian online banking)';
+    if (id === 'duitnow') return 'DuitNow QR';
+    return 'Credit / debit card';
   };
 
   const savePreferences = () => {
@@ -106,6 +278,7 @@ export default function CorporateProfilePage() {
     window.localStorage.setItem(
       'corporate_profile_v1',
       JSON.stringify({
+        ...readProfileStorage(),
         companyName,
         industry,
         logoPreview,
@@ -113,10 +286,306 @@ export default function CorporateProfilePage() {
         autoTopUp,
         primaryFocus,
         secondaryFocus,
+        walletBalance,
+        walletTransactions,
       }),
     );
     setSaveNote('Corporate profile saved.');
   };
+
+  const topUpModal =
+    topUpOpen && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-4"
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget && topUpStep !== 'processing') closeTopUpModal();
+            }}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl border-2 border-[#e5e5e5] bg-white p-6 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topup-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <h2 id="topup-modal-title" className="text-lg font-bold text-[#000000]">
+                  {topUpStep === 'amount' && 'Top up wallet'}
+                  {topUpStep === 'gateway' && 'Payment gateway'}
+                  {topUpStep === 'processing' && 'Processing payment'}
+                  {topUpStep === 'success' && 'Payment successful'}
+                </h2>
+                {topUpStep !== 'processing' ? (
+                  <button
+                    type="button"
+                    onClick={closeTopUpModal}
+                    className="rounded-lg p-1.5 text-gray-500 hover:bg-[#edf2f4]"
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+
+              {topUpStep === 'amount' ? (
+                <div className="mt-4 space-y-4">
+                  <p className="text-sm text-gray-600">Choose an amount to add to your Logistics Sponsorship Wallet.</p>
+                  <div className="flex flex-wrap gap-2">
+                    {TOP_UP_PRESETS.map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => {
+                          setTopUpPreset(n);
+                          setTopUpCustomRm('');
+                        }}
+                        className={`rounded-xl border-2 px-3 py-2 text-sm font-medium transition-all ${
+                          topUpPreset === n
+                            ? 'border-[#da1a32] bg-red-50 text-[#da1a32]'
+                            : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                        }`}
+                      >
+                        RM {n.toLocaleString('en-MY')}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setTopUpPreset('custom')}
+                      className={`rounded-xl border-2 px-3 py-2 text-sm font-medium transition-all ${
+                        topUpPreset === 'custom'
+                          ? 'border-[#da1a32] bg-red-50 text-[#da1a32]'
+                          : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                      }`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+                  {topUpPreset === 'custom' ? (
+                    <label className="block text-sm text-gray-700">
+                      Amount (RM)
+                      <input
+                        type="number"
+                        min={0.01}
+                        step={0.01}
+                        value={topUpCustomRm}
+                        onChange={(e) => setTopUpCustomRm(e.target.value)}
+                        placeholder="e.g. 750"
+                        className="mt-1.5 w-full rounded-xl border-2 border-[#e5e5e5] px-3 py-2.5 focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[#da1a32]"
+                      />
+                    </label>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={goToPaymentGateway}
+                    className="w-full rounded-xl bg-[#da1a32] py-2.5 text-sm font-semibold text-white hover:bg-[#b01528]"
+                  >
+                    Continue to payment
+                  </button>
+                </div>
+              ) : null}
+
+              {topUpStep === 'gateway' ? (
+                <div className="mt-4 space-y-4">
+                  <p className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/40 px-3 py-2 text-sm text-gray-700">
+                    You are paying{' '}
+                    <strong className="text-[#000000]">
+                      RM{' '}
+                      {resolveTopUpAmountRm()?.toLocaleString('en-MY', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </strong>{' '}
+                    into your corporate logistics wallet (demo checkout — no real charge).
+                  </p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Payment method</p>
+                  <div className="space-y-2">
+                    {(
+                      [
+                        { id: 'fpx' as const, icon: Landmark, desc: 'Pay via your bank account' },
+                        { id: 'duitnow' as const, icon: Smartphone, desc: 'Scan & pay with your banking app' },
+                        { id: 'card' as const, icon: CreditCard, desc: 'Visa, Mastercard, AMEX' },
+                      ] as const
+                    ).map(({ id, icon: Icon, desc }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setPayMethod(id)}
+                        className={`flex w-full items-center gap-3 rounded-xl border-2 px-3 py-3 text-left text-sm transition-all ${
+                          payMethod === id ? 'border-[#da1a32] bg-red-50' : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                        }`}
+                      >
+                        <Icon className="h-5 w-5 shrink-0 text-[#da1a32]" />
+                        <span>
+                          <span className="font-semibold text-[#000000]">{payMethodLabel(id)}</span>
+                          <span className="mt-0.5 block text-xs text-gray-600">{desc}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    In production this step connects to your payment provider (e.g. Stripe, Curlec, or local FPX). This
+                    screen simulates a successful authorization.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTopUpStep('amount')}
+                      className="flex-1 rounded-xl border-2 border-[#e5e5e5] py-2.5 text-sm font-medium hover:bg-[#edf2f4]"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={submitTopUpPayment}
+                      className="flex-1 rounded-xl bg-[#000000] py-2.5 text-sm font-semibold text-white hover:bg-[#1f1f1f]"
+                    >
+                      Pay securely
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {topUpStep === 'processing' ? (
+                <div className="mt-8 flex flex-col items-center py-4">
+                  <Loader2 className="h-10 w-10 animate-spin text-[#da1a32]" aria-hidden />
+                  <p className="mt-4 text-center text-sm text-gray-600">
+                    Contacting {payMethodLabel(payMethod)}…
+                    <br />
+                    Please do not close this window.
+                  </p>
+                </div>
+              ) : null}
+
+              {topUpStep === 'success' ? (
+                <div className="mt-4 space-y-4">
+                  <div className="flex justify-center">
+                    <CheckCircle2 className="h-14 w-14 text-green-600" aria-hidden />
+                  </div>
+                  <p className="text-center text-sm text-gray-700">
+                    <strong className="text-[#000000]">RM {lastTopUpRm.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>{' '}
+                    has been added to your wallet.
+                  </p>
+                  <p className="rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-center text-sm text-green-900">
+                    New balance:{' '}
+                    <strong>
+                      RM {Number(walletBalance).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </strong>
+                  </p>
+                  {lastTopUpRef ? (
+                    <p className="text-center text-xs text-gray-500">Reference: {lastTopUpRef}</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={closeTopUpModal}
+                    className="w-full rounded-xl bg-[#da1a32] py-2.5 text-sm font-semibold text-white hover:bg-[#b01528]"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  const reloadTransactionsFromStorage = () => {
+    const prev = readProfileStorage();
+    setWalletTransactions(parseWalletTransactionsFromStorage(prev.walletTransactions));
+  };
+
+  const openHistoryModal = () => {
+    reloadTransactionsFromStorage();
+    setHistoryOpen(true);
+  };
+
+  const closeHistoryModal = () => setHistoryOpen(false);
+
+  const historyModal =
+    historyOpen && typeof document !== 'undefined'
+      ? createPortal(
+          <div
+            className="fixed inset-0 z-[118] flex items-center justify-center bg-black/45 p-4"
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closeHistoryModal();
+            }}
+          >
+            <div
+              className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border-2 border-[#e5e5e5] bg-white shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="wallet-history-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex shrink-0 items-start justify-between gap-2 border-b border-[#e5e5e5] p-5">
+                <div className="flex items-center gap-2">
+                  <History className="h-5 w-5 text-[#da1a32]" aria-hidden />
+                  <h2 id="wallet-history-title" className="text-lg font-bold text-[#000000]">
+                    Transaction history
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeHistoryModal}
+                  className="rounded-lg p-1.5 text-gray-500 hover:bg-[#edf2f4]"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                {walletTransactions.length === 0 ? (
+                  <p className="text-sm text-gray-600">
+                    No transactions yet. After you complete a top-up, it will appear here with date and time.
+                  </p>
+                ) : (
+                  <ul className="space-y-3">
+                    {[...walletTransactions]
+                      .sort((a, b) => b.occurredAtIso.localeCompare(a.occurredAtIso))
+                      .map((tx) => (
+                      <li
+                        key={tx.id}
+                        className="rounded-xl border border-[#e5e5e5] bg-[#fafafa] px-3 py-3 text-sm"
+                      >
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <span className="font-semibold text-green-700">
+                            + RM{' '}
+                            {tx.amountRm.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                          <span className="text-xs text-gray-500">{formatWalletTxDate(tx.occurredAtIso)}</span>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-600">
+                          {payMethodLabel(tx.paymentMethod)} · Ref {tx.reference}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Balance after: RM{' '}
+                          {tx.balanceAfterRm.toLocaleString('en-MY', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </p>
+                      </li>
+                      ))}
+                  </ul>
+                )}
+              </div>
+              <div className="shrink-0 border-t border-[#e5e5e5] p-4">
+                <button
+                  type="button"
+                  onClick={closeHistoryModal}
+                  className="w-full rounded-xl bg-[#000000] py-2.5 text-sm font-semibold text-white hover:bg-[#1f1f1f]"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
     <div className="max-w-7xl mx-auto p-6">
@@ -267,13 +736,15 @@ export default function CorporateProfilePage() {
                       <p className="text-3xl font-bold text-[#000000] mt-1">RM {walletBalance}</p>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button
-                          onClick={topUpBalance}
+                          type="button"
+                          onClick={openTopUpModal}
                           className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#da1a32] text-white text-sm font-medium hover:bg-[#b01528] transition-all"
                         >
                           + Top Up Balance
                         </button>
                         <button
-                          onClick={() => ledgerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                          type="button"
+                          onClick={openHistoryModal}
                           className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-[#e5e5e5] text-sm font-medium hover:bg-[#edf2f4] transition-all"
                         >
                           View Transaction History
@@ -385,6 +856,8 @@ export default function CorporateProfilePage() {
           </div>
         </section>
       </div>
+      {topUpModal}
+      {historyModal}
     </div>
   );
 }

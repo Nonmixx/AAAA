@@ -3,13 +3,21 @@ import Link from 'next/link';
 import {
   Sparkles, Send, ImagePlus, Bot, User, CheckCircle2,
   XCircle, Package, MapPin, Building2, Brain, RotateCcw, AlertCircle,
-  Mic, Paperclip, MicOff, Loader2, Scale,
+  Mic, Paperclip, MicOff, Loader2, Scale, Truck, Zap,
 } from 'lucide-react';
 import type { DonationPlanPayload, PlanReceiver } from '../../lib/donation-plan-types';
+import type { DonationWorkflowSnapshot } from '../../lib/donation-workflow-types';
 import type { DonationImageAnalysisResult, PhotoVerificationStatus } from '../../lib/donation-image-analysis';
 
 type Condition = 'Good' | 'Worn' | 'Damaged';
-type Stage = 'greeting' | 'details' | 'awaiting_image' | 'analyzing' | 'result_suitable' | 'result_unsuitable';
+type Stage =
+  | 'greeting'
+  | 'details'
+  | 'awaiting_image'
+  | 'analyzing'
+  | 'result_suitable'
+  | 'result_unsuitable'
+  | 'awaiting_delivery_choice';
 
 interface ChatMessage {
   id: string;
@@ -23,8 +31,16 @@ interface ChatMessage {
   photoVerification?: PhotoVerificationStatus;
   /** Short model description of what appears in the image. */
   visibleSummary?: string;
+  detectedCategory?: string;
+  keyDetails?: string[];
   /** Server-ranked NGO matches for this assistant turn (chat API). */
   matchedAgents?: PlanReceiver[];
+  /** Deterministic workflow snapshot from `/api/donation-assistant/chat` (intent → structure → match). */
+  workflow?: DonationWorkflowSnapshot;
+  /** Which backend generated this turn. */
+  source?: 'glm' | 'fallback';
+  /** Optional backend explanation for fallback mode. */
+  sourceReason?: string;
 }
 
 const CONDITION_COLORS: Record<Condition, string> = {
@@ -264,6 +280,183 @@ function VisualReasoningPanel({ r }: { r: PlanReceiver }) {
   );
 }
 
+function categoryEmoji(slug: string): string {
+  if (slug === 'clothes') return '👕';
+  if (slug === 'food_packs') return '🍚';
+  if (slug === 'school_supplies') return '📚';
+  if (slug === 'blankets_bedding') return '🛏️';
+  if (slug === 'medical_supplies') return '⚕️';
+  return '📦';
+}
+
+function humanizeSourceReason(reason: string): string {
+  if (reason === 'missing_api_key') return 'missing API key in server env';
+  if (reason.startsWith('glm_http_401')) return 'GLM auth failed (check API key/base)';
+  if (reason.startsWith('glm_http_404')) return 'GLM endpoint not found (check API base)';
+  if (reason === 'network_or_runtime_error') return 'network/runtime error';
+  if (reason === 'empty_glm_reply') return 'empty model reply';
+  return reason;
+}
+
+function WorkflowOrchestrationPanel({
+  w,
+  onFillInput,
+}: {
+  w: DonationWorkflowSnapshot;
+  onFillInput: (text: string) => void;
+}) {
+  if (w.intent === 'unsupported') {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50/90 p-3 text-xs text-amber-950 shadow-sm">
+        <div className="flex items-center gap-2 font-semibold text-[#000000] mb-1">
+          <Brain className="w-4 h-4 text-amber-700" />
+          Workflow engine
+        </div>
+        <p className="leading-relaxed">{w.questions_to_resolve[0] ?? w.next_step_user}</p>
+        <p className="text-[10px] text-amber-800/90 mt-2 font-mono">flow_id: {w.flow_id}</p>
+      </div>
+    );
+  }
+
+  const em = categoryEmoji(w.category_slug);
+  const top = w.matched_ngo_summaries[0];
+  const second = w.matched_ngo_summaries[1];
+
+  return (
+    <div className="rounded-2xl border-2 border-[#da1a32]/20 bg-gradient-to-br from-white to-[#fef2f2] p-3 shadow-sm space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-lg" aria-hidden>
+            🧠
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-[#000000] uppercase tracking-wide">Orchestrated donation flow</p>
+            <p className="text-[10px] text-gray-500 font-mono truncate">{w.flow_id}</p>
+          </div>
+        </div>
+        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#000000] text-white whitespace-nowrap">
+          {w.workflow_state_label}
+        </span>
+      </div>
+
+      <div className="rounded-xl border border-[#e5e5e5] bg-white/90 px-3 py-2">
+        <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-1">Detected</p>
+        <p className="text-sm font-semibold text-[#000000]">
+          {em} {w.category_display.toUpperCase()}
+        </p>
+        <p className="text-[10px] text-gray-500 mt-1">
+          Intent: <span className="font-medium text-gray-700">{w.intent.replace(/_/g, ' ')}</span> · Action:{' '}
+          <span className="font-medium text-gray-700">{w.action_type.replace(/_/g, ' ')}</span>
+        </p>
+      </div>
+
+      {w.structured_donation.missing_fields.length > 0 ? (
+        <div className="rounded-xl border border-dashed border-[#da1a32]/40 bg-white/80 px-3 py-2">
+          <p className="text-[10px] font-bold text-[#da1a32] uppercase tracking-wide mb-1">Missing fields (server)</p>
+          <ul className="text-xs text-gray-700 space-y-0.5 list-disc list-inside">
+            {w.structured_donation.missing_fields.map((f) => (
+              <li key={f}>{f.replace(/_/g, ' ')}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="rounded-xl border border-[#e5e5e5] bg-white px-3 py-2 space-y-1.5">
+        <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">Clarify next</p>
+        {w.questions_to_resolve.slice(0, 2).map((q, i) => (
+          <p key={i} className="text-xs text-[#000000] leading-snug">
+            📌 {q}
+          </p>
+        ))}
+      </div>
+
+      <div className="rounded-xl border border-[#e5e5e5] bg-white px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-2">
+          <Truck className="w-3.5 h-3.5 text-[#da1a32]" />
+          Delivery options
+        </div>
+        <ol className="space-y-1.5 text-xs text-gray-800">
+          {w.delivery_options.map((o, idx) => (
+            <li key={o.id} className="flex gap-2">
+              <span className="font-bold text-[#da1a32] shrink-0">({idx + 1})</span>
+              <span>
+                <span className="font-semibold text-[#000000]">{o.label}</span>
+                {o.recommended ? <span className="text-[10px] text-[#da1a32] font-medium"> · Recommended</span> : null}
+                <span className="block text-[10px] text-gray-500 mt-0.5">{o.description}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-800 uppercase tracking-wide mb-1">
+          <Zap className="w-3.5 h-3.5" />
+          Suggested impact (demo)
+        </div>
+        <p className="text-xs text-emerald-950 leading-relaxed">
+          Supports ~{w.impact.beneficiaryLow}–{w.impact.beneficiaryHigh} touchpoints — {w.impact.basisNote}
+        </p>
+      </div>
+
+      {(top || second) && (
+        <div className="rounded-xl border border-[#e5e5e5] bg-white px-3 py-2">
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-1.5">Catalog match preview</p>
+          <ul className="text-xs text-[#000000] space-y-1">
+            {top ? (
+              <li className="flex gap-2">
+                <span className="text-[#da1a32]">→</span>
+                <span>
+                  <span className="font-semibold">{top.name}</span>
+                  <span className="text-[10px] text-gray-500 block">{top.location}</span>
+                </span>
+              </li>
+            ) : null}
+            {second ? (
+              <li className="flex gap-2">
+                <span className="text-[#da1a32]">→</span>
+                <span>
+                  <span className="font-semibold">{second.name}</span>
+                  <span className="text-[10px] text-gray-500 block">{second.location}</span>
+                </span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2 pt-0.5">
+        <button
+          type="button"
+          onClick={() =>
+            onFillInput(
+              `Continue donation: ${w.category_display.toLowerCase()} donation. ${w.questions_to_resolve[0] ?? 'I can share missing details now.'}`,
+            )
+          }
+          className="flex-1 min-w-[140px] px-3 py-2 rounded-xl bg-[#da1a32] text-white text-xs font-semibold hover:bg-[#b81428] transition-colors shadow-sm"
+        >
+          Continue donation
+        </button>
+        <button
+          type="button"
+            onClick={() =>
+            onFillInput(
+              'Let DonateAI choose the best route: self drop-off, Corporate Logistics Wallet–funded pickup, or Community Crowdfunding Board–funded pickup — whichever maximizes impact for my donation (I will not use a paid courier).',
+            )
+          }
+          className="flex-1 min-w-[140px] px-3 py-2 rounded-xl border-2 border-[#000000] text-[#000000] text-xs font-semibold hover:bg-[#edf2f4] transition-colors"
+        >
+          Let AI decide
+        </button>
+      </div>
+
+      <p className="text-[10px] text-gray-500 leading-snug border-t border-[#e5e5e5] pt-2">
+        Next: {w.next_step_user}
+      </p>
+    </div>
+  );
+}
+
 function MatchedAgentChatCard({ r }: { r: PlanReceiver }) {
   return (
     <li className="rounded-lg border border-[#e5e5e5] overflow-hidden">
@@ -323,6 +516,8 @@ export function AIDonation() {
   const [pendingAttachFiles, setPendingAttachFiles] = useState<File[]>([]);
   const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
   const [glmPlan, setGlmPlan] = useState<DonationPlanPayload | null>(null);
+  const [donationAccepted, setDonationAccepted] = useState(false);
+  const [deliveryChoice, setDeliveryChoice] = useState<'self_dropoff' | 'partner_logistics' | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const detectedItemRef = useRef(detectedItem);
   detectedItemRef.current = detectedItem;
@@ -331,9 +526,10 @@ export function AIDonation() {
   const attachInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef('');
+  const donationFlowIdRef = useRef<string | null>(null);
 
   const displayReceivers = useMemo(
-    () => (glmPlan?.receivers?.length ? glmPlan.receivers : FALLBACK_ALLOCATION),
+    () => (glmPlan?.receivers?.length ? glmPlan.receivers.slice(0, 1) : FALLBACK_ALLOCATION.slice(0, 1)),
     [glmPlan],
   );
 
@@ -344,6 +540,24 @@ export function AIDonation() {
       if (m.role === 'bot' && m.type === 'text' && m.matchedAgents?.length) {
         return m.matchedAgents;
       }
+    }
+    return null;
+  }, [messages]);
+
+  /** Latest server workflow snapshot (structured intent + logistics + matching). */
+  const activeWorkflow = useMemo((): DonationWorkflowSnapshot | null => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role === 'bot' && m.type === 'text' && m.workflow) return m.workflow;
+    }
+    return null;
+  }, [messages]);
+
+  /** Render heavy workflow/match cards only on the latest bot text turn. */
+  const latestBotTextMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role === 'bot' && m.type === 'text') return m.id;
     }
     return null;
   }, [messages]);
@@ -409,6 +623,8 @@ export function AIDonation() {
           suitable: okForAllocation,
           photoVerification: verification,
           visibleSummary: analysis.visibleSummary,
+          detectedCategory: analysis.detectedCategory,
+          keyDetails: analysis.keyDetails,
         },
       ]);
 
@@ -460,7 +676,7 @@ export function AIDonation() {
       })();
       setTimeout(() => {
         addBotMessage(
-          `✅ Photo accepted: ${analysis.visibleSummary} Z.AI GLM is matching NGO demand, urgency, and split — your allocation appears below when ready.`,
+          `✅ Photo accepted: ${analysis.visibleSummary} I will recommend the best single organization for this donation.`,
         );
       }, 400);
     } catch {
@@ -476,7 +692,7 @@ export function AIDonation() {
   };
 
   const handleSend = async () => {
-    if (stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
+    if (stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
     if (isTyping) return;
 
     const trimmed = inputText.trim();
@@ -529,12 +745,10 @@ export function AIDonation() {
     }
 
     let nextStage: Stage = stage;
+    // First text turn should collect missing details before photo gate.
     if (stage === 'greeting') nextStage = 'details';
-    else if (stage === 'details') {
-      nextStage = 'awaiting_image';
-    } else if (stage === 'awaiting_image') {
-      nextStage = 'awaiting_image';
-    }
+    else if (stage === 'details') nextStage = 'details';
+    else if (stage === 'awaiting_image') nextStage = 'awaiting_image';
 
     const userMsg: ChatMessage = {
       id: `${Date.now()}-u`,
@@ -559,18 +773,42 @@ export function AIDonation() {
           stage: nextStage,
           detectedItem: nextDetected,
           userLatest: userLine,
+          donationFlowId: donationFlowIdRef.current,
         }),
       });
       const data = (await res.json()) as {
         reply?: string;
         matchedAgents?: PlanReceiver[];
+        workflow?: DonationWorkflowSnapshot;
+        source?: 'glm' | 'fallback';
+        sourceReason?: string;
       };
       const reply = data.reply?.trim() || 'Thanks — let me know how else I can help.';
       const agents =
         Array.isArray(data.matchedAgents) && data.matchedAgents.length > 0 ? data.matchedAgents : undefined;
       const extra: Partial<ChatMessage> = {};
       if (agents) extra.matchedAgents = agents;
+      if (data.workflow && typeof data.workflow.flow_id === 'string') {
+        extra.workflow = data.workflow;
+        donationFlowIdRef.current = data.workflow.flow_id;
+      }
+      if (data.source === 'glm' || data.source === 'fallback') {
+        extra.source = data.source;
+      }
+      if (typeof data.sourceReason === 'string' && data.sourceReason.trim()) {
+        extra.sourceReason = data.sourceReason.trim();
+      }
       addBotMessage(reply, Object.keys(extra).length ? extra : undefined);
+      if (data.workflow && stage !== 'result_suitable' && stage !== 'awaiting_delivery_choice') {
+        const wf = data.workflow;
+        if (wf.intent !== 'donate_physical_item') {
+          setStage('details');
+        } else if (wf.structured_donation?.missing_fields?.length > 0) {
+          setStage('details');
+        } else {
+          setStage('awaiting_image');
+        }
+      }
     } catch {
       addBotMessage('I could not reach the assistant just now. Please try again in a moment.');
     } finally {
@@ -594,7 +832,10 @@ export function AIDonation() {
   const handleReset = () => {
     setStage('greeting');
     transcriptRef.current = '';
+    donationFlowIdRef.current = null;
     setGlmPlan(null);
+    setDonationAccepted(false);
+    setDeliveryChoice(null);
     setPlanLoading(false);
     setPendingImage(null);
     setPendingAttachFiles([]);
@@ -761,14 +1002,15 @@ export function AIDonation() {
         <div>
           <h1 className="text-3xl mb-1 text-[#000000] font-bold">AI Donation Assistant</h1>
           <p className="text-gray-500">
-            Chat with our AI to find the best match for your donation. Allocation planning uses{' '}
-            <span className="text-[#000000] font-medium">Z.AI GLM</span> when{' '}
-            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_KEY</code> is set; otherwise a smart
-            on-device fallback runs. Item photos are checked with a{' '}
-            <span className="text-[#000000] font-medium">vision model</span> (
-            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_VISION_MODEL</code>, default{' '}
-            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">glm-4v-plus</code>) so unrelated or mismatched
-            images are rejected.
+            This is a <span className="text-[#000000] font-medium">stateful agentic workflow</span>: GLM interprets your
+            messages and (when you send a photo) runs a vision gate, then a structured allocation pass — with server-side
+            tools (NGO catalog match, JSON planners). Set{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_KEY</code> and{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_BASE</code> (e.g.{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">https://api.z.ai/api/paas/v4</code> or BigModel)
+            plus <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_MODEL</code> /{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_VISION_MODEL</code>. Without the key, a
+            heuristic fallback answers — coordinated multi-step reasoning is reduced.
           </p>
         </div>
         <button
@@ -821,6 +1063,24 @@ export function AIDonation() {
                 <span className="text-xs text-gray-500 uppercase tracking-wide">Progress</span>
                 <p className="text-sm font-medium text-[#000000] mt-0.5">{stageSummaryLabel}</p>
               </div>
+
+              {activeWorkflow && !lastAnalysis ? (
+                <div className="rounded-xl border border-[#da1a32]/25 bg-white p-3 shadow-sm space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Brain className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
+                    <span className="text-xs font-bold text-[#000000] uppercase tracking-wide">Workflow state</span>
+                  </div>
+                  <p className="text-[10px] font-mono text-gray-600 break-all">{activeWorkflow.flow_id}</p>
+                  <p className="text-xs text-gray-700 leading-snug">{activeWorkflow.workflow_state_label}</p>
+                  <div className="rounded-lg bg-[#edf2f4]/80 border border-[#e5e5e5] px-2 py-1.5">
+                    <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Structured donation</p>
+                    <pre className="text-[9px] leading-tight text-[#000000] whitespace-pre-wrap font-mono overflow-x-auto">
+                      {JSON.stringify(activeWorkflow.structured_donation, null, 2)}
+                    </pre>
+                  </div>
+                  <p className="text-[10px] text-gray-500 leading-snug">{activeWorkflow.logistics.summary}</p>
+                </div>
+              ) : null}
 
               {!lastAnalysis ? (
                 <>
@@ -1009,6 +1269,11 @@ export function AIDonation() {
               const cond = msg.condition!;
               const pv = msg.photoVerification ?? 'passed';
               const photoRejected = pv !== 'passed';
+              const suitabilityLabel = photoRejected
+                ? 'Resend photo required'
+                : msg.suitable
+                  ? 'Suitable for donation'
+                  : 'Not suitable';
               const headline = photoRejected
                 ? pv === 'wrong_item_for_category'
                   ? 'Wrong item for your category'
@@ -1031,43 +1296,41 @@ export function AIDonation() {
                         {msg.visibleSummary}
                       </p>
                     ) : null}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">Declared donation</span>
-                        <span className="text-xs font-medium text-[#000000] flex items-center gap-1 text-right">
-                          <Package className="w-3 h-3 flex-shrink-0" /> {detectedItem}
-                        </span>
-                      </div>
-                      {!photoRejected ? (
-                        <>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-500">Condition</span>
-                            <span
-                              className={`text-xs font-medium px-2 py-0.5 rounded-full border ${CONDITION_COLORS[cond]}`}
-                            >
-                              {cond}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-500">Suitability</span>
-                            {msg.suitable ? (
-                              <span className="text-xs font-medium text-green-700 flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> Suitable for donation
-                              </span>
-                            ) : (
-                              <span className="text-xs font-medium text-[#da1a32] flex items-center gap-1">
-                                <XCircle className="w-3.5 h-3.5" /> Not suitable (damaged)
-                              </span>
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2 text-xs text-amber-950 leading-relaxed">
-                          This image does not pass screening. Please queue a new photo of your actual donation item and
-                          press <strong>Send</strong> again.
-                        </div>
-                      )}
+                    <div className="overflow-x-auto rounded-lg border border-[#e5e5e5] bg-white">
+                      <table className="w-full text-xs">
+                        <tbody>
+                          {[
+                            ['Declared donation', detectedItem],
+                            ['Detected category', msg.detectedCategory || '—'],
+                            ['Photo relevance', pv === 'not_a_donation_photo' ? 'Failed' : 'Passed'],
+                            ['Category match', pv === 'wrong_item_for_category' ? 'Failed' : 'Passed'],
+                            ['Condition', cond],
+                            ['Suitability', suitabilityLabel],
+                          ].map(([k, v]) => (
+                            <tr key={k} className="border-b border-[#edf2f4] last:border-b-0">
+                              <th className="w-40 bg-[#fafafa] px-2.5 py-2 text-left font-semibold text-gray-600">{k}</th>
+                              <td className="px-2.5 py-2 text-[#000000]">{v}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
+                    {msg.keyDetails?.length ? (
+                      <div className="rounded-lg border border-[#e5e5e5] bg-white/70 px-3 py-2 text-xs text-gray-700">
+                        <p className="mb-1 font-semibold text-gray-600">Detected details</p>
+                        <ul className="list-disc space-y-0.5 pl-4">
+                          {msg.keyDetails.map((d, i) => (
+                            <li key={`${msg.id}-k-${i}`}>{d}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {photoRejected ? (
+                      <div className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2 text-xs text-amber-950 leading-relaxed">
+                        This image does not pass screening. Please queue a new photo of your actual donation item and
+                        press <strong>Send</strong> again.
+                      </div>
+                    ) : null}
                   </div>
                 </BotBubble>
               );
@@ -1076,10 +1339,26 @@ export function AIDonation() {
             return (
               <BotBubble key={msg.id}>
                 <div className="space-y-3">
+                  {msg.source ? (
+                    <div className="text-[10px] text-gray-500">
+                      Source:{' '}
+                      <span className="rounded-full border border-[#e5e5e5] bg-white px-2 py-0.5 font-medium text-[#000000]">
+                        {msg.source === 'glm' ? 'Z.AI GLM' : 'Fallback'}
+                      </span>
+                      {msg.source === 'fallback' && msg.sourceReason ? (
+                        <span className="ml-2 text-amber-700">
+                          ({humanizeSourceReason(msg.sourceReason)})
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <div className="bg-white border border-[#e5e5e5] text-[#000000] px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm text-sm leading-relaxed whitespace-pre-line">
                     {msg.text}
                   </div>
-                  {msg.matchedAgents && msg.matchedAgents.length > 0 ? (
+                  {msg.workflow && msg.id === latestBotTextMessageId ? (
+                    <WorkflowOrchestrationPanel w={msg.workflow} onFillInput={(t) => setInputText(t)} />
+                  ) : null}
+                  {msg.matchedAgents && msg.matchedAgents.length > 0 && msg.id === latestBotTextMessageId ? (
                     <div className="bg-white border border-[#e5e5e5] rounded-2xl rounded-tl-sm shadow-sm p-3 text-sm">
                       <div className="flex items-center gap-2 mb-2">
                         <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
@@ -1254,12 +1533,12 @@ export function AIDonation() {
       </div>
 
       {/* Allocation Results (shown below chat when suitable) */}
-      {stage === 'result_suitable' && (
+      {(stage === 'result_suitable' || stage === 'awaiting_delivery_choice') && (
         <div className="mt-6 space-y-5">
           {planLoading && (
             <div className="flex items-center gap-2 text-sm text-gray-600 bg-[#edf2f4] border border-[#e5e5e5] rounded-xl px-4 py-3">
               <Loader2 className="w-4 h-4 animate-spin text-[#da1a32]" />
-              Z.AI GLM is extracting intent, checking NGO demand, evaluating urgency, and splitting allocation…
+              Z.AI GLM is extracting intent, checking NGO demand, and selecting the best single organization…
             </div>
           )}
 
@@ -1299,7 +1578,7 @@ export function AIDonation() {
           <div>
             <h2 className="text-xl font-bold text-[#000000] mb-4 flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-[#da1a32]" />
-              AI-Recommended Allocation
+              AI-Recommended Organization
             </h2>
             <div className="space-y-4">
               {displayReceivers.map((r, i) => (
@@ -1326,17 +1605,10 @@ export function AIDonation() {
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <div className="text-2xl font-bold text-[#da1a32]">{r.allocation}%</div>
-                      <div className="text-xs text-gray-500">of total allocation</div>
+                      <div className="text-xs font-semibold rounded-full border border-[#e5e5e5] bg-[#edf2f4] px-2 py-1 text-[#000000]">
+                        Recommended
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="h-2 bg-[#edf2f4] rounded-full mb-4 overflow-hidden">
-                    <div
-                      className="h-full bg-[#da1a32] rounded-full transition-all"
-                      style={{ width: `${r.percent}%` }}
-                    />
                   </div>
 
                   {/* AI Explanation Panel */}
@@ -1375,9 +1647,9 @@ export function AIDonation() {
                 <p className="text-[10px] text-gray-500">Illustrative estimate</p>
               </div>
               <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
-                <p className="text-[10px] text-gray-500 uppercase tracking-wide">NGOs supported</p>
-                <p className="text-xl font-bold text-[#000000]">{new Set(displayReceivers.map((r) => r.ngoId)).size}</p>
-                <p className="text-[10px] text-gray-500">Diversified allocation</p>
+                <p className="text-[10px] text-gray-500 uppercase tracking-wide">Organization selected</p>
+                <p className="text-xl font-bold text-[#000000]">1</p>
+                <p className="text-[10px] text-gray-500">Best-fit recommendation</p>
               </div>
               <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
                 <p className="text-[10px] text-gray-500 uppercase tracking-wide">Urgent cases resolved</p>
@@ -1392,11 +1664,64 @@ export function AIDonation() {
             </p>
           </div>
 
-          {/* Confirm Button */}
-          <button className="w-full bg-[#da1a32] text-white py-3.5 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium flex items-center justify-center gap-2">
-            <CheckCircle2 className="w-5 h-5" />
-            Confirm Donation & Proceed
-          </button>
+          {!donationAccepted ? (
+            <button
+              type="button"
+              onClick={() => {
+                const ngo = displayReceivers[0];
+                setDonationAccepted(true);
+                setStage('awaiting_delivery_choice');
+                addBotMessage(
+                  `Great choice. I will route this donation to **${ngo?.name ?? 'the recommended organization'}**.\n\nPlease choose delivery method:\n1) Drop off yourself\n2) Our logistics partner pickup`,
+                );
+              }}
+              className="w-full bg-[#da1a32] text-white py-3.5 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium flex items-center justify-center gap-2"
+            >
+              <CheckCircle2 className="w-5 h-5" />
+              Accept Organization & Continue
+            </button>
+          ) : (
+            <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Truck className="w-4 h-4 text-[#da1a32]" />
+                <h3 className="text-sm font-bold text-[#000000]">Choose delivery method</h3>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeliveryChoice('self_dropoff');
+                    addBotMessage(
+                      'You selected **Drop off yourself**. I will provide partner location and handoff steps next.',
+                    );
+                  }}
+                  className={`rounded-xl border-2 px-4 py-3 text-sm font-medium text-left transition-all ${
+                    deliveryChoice === 'self_dropoff'
+                      ? 'border-[#da1a32] bg-red-50 text-[#da1a32]'
+                      : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                  }`}
+                >
+                  Drop off yourself
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeliveryChoice('partner_logistics');
+                    addBotMessage(
+                      'You selected **Logistics partner pickup**. I will proceed with pickup scheduling details.',
+                    );
+                  }}
+                  className={`rounded-xl border-2 px-4 py-3 text-sm font-medium text-left transition-all ${
+                    deliveryChoice === 'partner_logistics'
+                      ? 'border-[#da1a32] bg-red-50 text-[#da1a32]'
+                      : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                  }`}
+                >
+                  Logistics partner pickup
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

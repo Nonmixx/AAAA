@@ -1,3 +1,6 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   Heart,
@@ -16,6 +19,7 @@ import {
   Baby,
   Smile,
 } from 'lucide-react';
+import { fetchDonorDisplayName } from '@/lib/supabase/donor-profile';
 
 const stats = [
   { label: 'Total Donations', value: '24', icon: Package, color: 'bg-[#da1a32]' },
@@ -113,6 +117,24 @@ const quickActions = [
 ];
 
 export function DonorDashboard() {
+  const [displayName, setDisplayName] = useState('…');
+
+  const refreshName = useCallback(async () => {
+    try {
+      const name = await fetchDonorDisplayName();
+      setDisplayName(name);
+    } catch {
+      setDisplayName('Donor');
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshName();
+    const onProfileSaved = () => void refreshName();
+    window.addEventListener('donor-profile-updated', onProfileSaved);
+    return () => window.removeEventListener('donor-profile-updated', onProfileSaved);
+  }, [refreshName]);
+
   return (
     <div className="min-h-screen bg-white">
       {/* Welcome Banner */}
@@ -121,9 +143,10 @@ export function DonorDashboard() {
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
             <div>
               <p className="text-[#da1a32] text-sm font-medium mb-1">Welcome back 👋</p>
-              <h1 className="text-3xl font-bold mb-2">Sarah Johnson</h1>
+              <h1 className="text-3xl font-bold mb-2">{displayName}</h1>
               <p className="text-white opacity-70">
-                You've made a difference to <span className="text-white font-medium opacity-100">12 organizations</span> so far. Keep it up!
+                You&apos;ve made a difference to{' '}
+                <span className="text-white font-medium opacity-100">12 organizations</span> so far. Keep it up!
               </p>
             </div>
             <Link href="/donor/donate">

@@ -4,14 +4,33 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, Lock, Heart } from 'lucide-react';
-import { resolveAuthenticatedRoute } from '@/lib/supabase/auth';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { resolveAuthenticatedRoute, type AppRole } from '@/lib/supabase/auth';
+
+function loginTabMatchesProfileRole(
+  tab: 'donor' | 'receiver' | 'corporate_partner',
+  profileRole: string | undefined,
+): boolean {
+  if (!profileRole) return false;
+  if (tab === 'donor') return profileRole === 'donor';
+  if (tab === 'corporate_partner') return profileRole === 'corporate_partner';
+  return profileRole === 'receiver' || profileRole === 'admin';
+}
+
+function profileRoleLabel(role: string | undefined): string {
+  if (role === 'donor') return 'Donor';
+  if (role === 'receiver') return 'Receiver';
+  if (role === 'admin') return 'Admin';
+  if (role === 'corporate_partner') return 'Corporate Partner';
+  return role ?? 'Unknown';
+}
 
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [role, setRole] = useState<'donor' | 'receiver' | 'corporate'>('donor');
-  const [form, setForm] = useState({ email: '', password: '' });
+  const [role, setRole] = useState<'donor' | 'receiver' | 'corporate_partner'>('donor');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -19,7 +38,6 @@ export default function LoginPage() {
 
   useEffect(() => {
     let isMounted = true;
-
     const redirectAuthenticatedUser = async () => {
       try {
         const route = await resolveAuthenticatedRoute();
@@ -37,37 +55,92 @@ export default function LoginPage() {
     };
 
     void redirectAuthenticatedUser();
-
     return () => {
       isMounted = false;
     };
   }, [router]);
 
+  useEffect(() => {
+    const r = searchParams.get('role');
+    if (r === 'donor' || r === 'receiver' || r === 'corporate_partner') {
+      setRole(r);
+    }
+  }, [searchParams]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setLoading(true);
-
     try {
       const supabase = getSupabaseBrowserClient();
-      const { error } = await supabase.auth.signInWithPassword({
-        email: form.email,
-        password: form.password,
-      });
-
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         setErrorMessage(error.message);
         return;
       }
 
-      const redirectTarget = searchParams.get('redirect');
-      if (redirectTarget?.startsWith('/')) {
-        router.push(redirectTarget);
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) {
+        setErrorMessage('Signed in, but user session was not found.');
         return;
       }
 
-      const route = await resolveAuthenticatedRoute(role);
-      router.push(route ?? (role === 'corporate' ? '/corporate/dashboard' : '/donor/dashboard'));
+      const { data: profileRow, error: profileReadError } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .maybeSingle();
+      if (profileReadError) {
+        setErrorMessage(profileReadError.message);
+        await supabase.auth.signOut();
+        return;
+      }
+
+      if (!loginTabMatchesProfileRole(role, profileRow?.role)) {
+        await supabase.auth.signOut();
+        setErrorMessage(
+          `This email is registered as ${profileRoleLabel(profileRow?.role)}. Choose the matching login type above.`,
+        );
+        return;
+      }
+
+      if (role === 'corporate_partner') {
+        const { data: cp, error: cpError } = await supabase
+          .from('corporate_partners')
+          .select('id')
+          .eq('owner_profile_id', user.id)
+          .maybeSingle();
+        if (cpError) {
+          setErrorMessage(cpError.message);
+          await supabase.auth.signOut();
+          return;
+        }
+        if (!cp) {
+          await supabase.auth.signOut();
+          setErrorMessage(
+            'No corporate partner record for this account. Complete corporate sign-up or use another login type.',
+          );
+          return;
+        }
+      }
+
+      const redirectTarget = searchParams.get('redirect');
+      if (redirectTarget?.startsWith('/')) {
+        router.replace(redirectTarget);
+        return;
+      }
+
+      const preferred: AppRole =
+        role === 'receiver' ? 'receiver' : role === 'corporate_partner' ? 'corporate_partner' : 'donor';
+      const route = await resolveAuthenticatedRoute(preferred);
+      router.replace(
+        route ??
+          (role === 'receiver' ? '/receiver' : role === 'corporate_partner' ? '/corporate/dashboard' : '/donor/dashboard'),
+      );
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to sign in.');
     } finally {
@@ -105,9 +178,7 @@ export default function LoginPage() {
             type="button"
             onClick={() => setRole('donor')}
             className={`flex-1 py-2.5 text-sm font-medium transition-all ${
-              role === 'donor'
-                ? 'bg-[#da1a32] text-white'
-                : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
+              role === 'donor' ? 'bg-[#da1a32] text-white' : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
           >
             Donor
@@ -116,18 +187,16 @@ export default function LoginPage() {
             type="button"
             onClick={() => setRole('receiver')}
             className={`flex-1 py-2.5 text-sm font-medium transition-all ${
-              role === 'receiver'
-                ? 'bg-[#da1a32] text-white'
-                : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
+              role === 'receiver' ? 'bg-[#da1a32] text-white' : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
           >
             Receiver
           </button>
           <button
             type="button"
-            onClick={() => setRole('corporate')}
+            onClick={() => setRole('corporate_partner')}
             className={`flex-1 py-2.5 text-sm font-medium transition-all ${
-              role === 'corporate'
+              role === 'corporate_partner'
                 ? 'bg-[#da1a32] text-white'
                 : 'bg-white text-gray-500 hover:bg-[#edf2f4]'
             }`}
@@ -136,7 +205,7 @@ export default function LoginPage() {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1.5">
               Email Address
@@ -147,8 +216,8 @@ export default function LoginPage() {
                 id="email"
                 type="email"
                 required
-                value={form.email}
-                onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-[#da1a32] focus:border-transparent text-[#000000]"
                 placeholder="you@example.com"
               />
@@ -165,8 +234,8 @@ export default function LoginPage() {
                 id="password"
                 type="password"
                 required
-                value={form.password}
-                onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className="w-full pl-10 pr-4 py-2.5 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-[#da1a32] focus:border-transparent text-[#000000]"
                 placeholder="Enter your password"
               />
@@ -174,9 +243,7 @@ export default function LoginPage() {
           </div>
 
           {errorMessage ? (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {errorMessage}
-            </div>
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errorMessage}</div>
           ) : null}
 
           <div className="flex items-center justify-between text-sm">
@@ -194,7 +261,7 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-[#da1a32] text-white py-3 rounded-lg hover:bg-[#b01528] transition-all font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Logging in...' : 'Login'}
+            {loading ? 'Signing in...' : 'Login'}
           </button>
         </form>
 

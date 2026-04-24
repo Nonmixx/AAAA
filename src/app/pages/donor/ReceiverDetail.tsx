@@ -117,13 +117,9 @@ export function ReceiverDetail({ backHref = '/donor/needs', donateHref = '/donor
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <div className="mb-4">
-        <Link href={backHref}>
-          <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
-            Back
-          </button>
-        </Link>
-      </div>
+      <Link href={backHref} className="text-[#da1a32] hover:text-[#b01528] mb-6 inline-block font-medium">
+        ← Back to Needs List
+      </Link>
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">

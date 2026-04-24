@@ -18,17 +18,10 @@ type ReceiverNeedsListProps = {
   detailBasePath?: string;
   showBackButton?: boolean;
   backHref?: string;
-  /** Live rows from Supabase; merged ahead of demo data when present. */
   liveReceivers?: PublicBrowseReceiver[];
 };
 
-function ImageCarousel({
-  images,
-  altPrefix,
-}: {
-  images: string[];
-  altPrefix: string;
-}) {
+function ImageCarousel({ images, altPrefix }: { images: string[]; altPrefix: string }) {
   const [index, setIndex] = useState(0);
   const total = images.length;
   const current = images[index] || DEFAULT_NEED_IMAGE;
@@ -94,10 +87,8 @@ export function ReceiverNeedsList({
           longitude: position.coords.longitude,
         });
       },
-      () => {
-        setUserLocation(null);
-      },
-      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 }
+      () => setUserLocation(null),
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 },
     );
   }, []);
 
@@ -119,21 +110,22 @@ export function ReceiverNeedsList({
     return `${km.toFixed(1)} km`;
   };
 
-  // Guard against merge regressions: keep public /needs flow on public routes.
   const isPublicNeedsRoute = pathname?.startsWith('/needs');
   const resolvedDetailBasePath = isPublicNeedsRoute ? '/needs' : detailBasePath;
   const resolvedShowBackButton = isPublicNeedsRoute ? true : showBackButton;
   const resolvedBackHref = isPublicNeedsRoute ? '/donor' : backHref;
 
-  const mergedReceivers = useMemo(() => liveReceivers, [liveReceivers]);
-
-  const sortedReceivers = emergencyMode
-    ? [...mergedReceivers].sort((a, b) => (b.emergency ? 1 : 0) - (a.emergency ? 1 : 0))
-    : mergedReceivers;
+  const sortedReceivers = useMemo(
+    () =>
+      emergencyMode
+        ? [...liveReceivers].sort((a, b) => (b.emergency ? 1 : 0) - (a.emergency ? 1 : 0))
+        : liveReceivers,
+    [emergencyMode, liveReceivers],
+  );
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      {resolvedShowBackButton && (
+      {resolvedShowBackButton ? (
         <div className="mb-4">
           <Link href={resolvedBackHref}>
             <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
@@ -141,39 +133,24 @@ export function ReceiverNeedsList({
             </button>
           </Link>
         </div>
-      )}
+      ) : null}
 
       <div className="mb-8">
         <h1 className="text-3xl mb-2 text-[#000000] font-bold">Organizations in Need</h1>
         <p className="text-gray-600">Browse and support organizations that need your help</p>
       </div>
 
-      {/* Emergency Mode Banner */}
-      {emergencyMode && (
+      {emergencyMode ? (
         <div className="mb-6 bg-[#da1a32] text-white px-5 py-4 rounded-2xl flex items-start gap-3 shadow-lg">
           <Zap className="w-5 h-5 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="font-bold text-sm">Emergency Mode Active — Urgent requests are prioritised</p>
-            <p className="text-xs text-white opacity-80 mt-0.5">Emergency-tagged organisations appear at the top. AI allocation will prioritise them first.</p>
+            <p className="font-bold text-sm">Emergency Mode Active - Urgent requests are prioritised</p>
+            <p className="text-xs text-white opacity-80 mt-0.5">
+              Emergency-tagged organisations appear at the top. AI allocation will prioritise them first.
+            </p>
           </div>
         </div>
-      )}
-
-      <div className="mb-6 flex gap-4 flex-wrap">
-        <select className="px-4 py-2 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] bg-white text-[#000000]">
-          <option>All Categories</option>
-          <option>Food &amp; Supplies</option>
-          <option>Medical</option>
-          <option>Clothing</option>
-          <option>Education</option>
-        </select>
-        <select className="px-4 py-2 border-2 border-[#e5e5e5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#da1a32] bg-white text-[#000000]">
-          <option>All Urgency Levels</option>
-          <option>High Priority</option>
-          <option>Medium Priority</option>
-          <option>Low Priority</option>
-        </select>
-      </div>
+      ) : null}
 
       <div className="grid lg:grid-cols-2 gap-6">
         {sortedReceivers.length === 0 ? (
@@ -181,101 +158,94 @@ export function ReceiverNeedsList({
             No active organizations are available yet.
           </div>
         ) : null}
-        {sortedReceivers.map((receiver) => (
-          <Link key={receiver.id} href={`${resolvedDetailBasePath}/${receiver.id}`}>
-            {(() => {
-              const receiverImages = Array.from(
-                new Set(
-                  receiver.items.flatMap((item) =>
-                    item.imageUrls && item.imageUrls.length > 0
-                      ? item.imageUrls
-                      : item.imageUrl
-                        ? [item.imageUrl]
-                        : []
-                  )
-                )
-              );
-              const cardMainImage =
-                receiverImages[0] ||
-                getContextualDefaultNeedImage(receiver.items.map((item) => item.item).join(' ')) ||
-                DEFAULT_NEED_IMAGE;
-              return (
-            <div
-              className={`bg-white rounded-2xl p-6 border-2 shadow-sm hover:shadow-md hover:border-[#da1a32] transition-all cursor-pointer ${
-                emergencyMode && receiver.emergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'
-              }`}
-            >
-              <ImageCarousel
-                images={receiverImages.length > 0 ? receiverImages : [cardMainImage]}
-                altPrefix={`${receiver.name} need image`}
-              />
 
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-start gap-3">
-                  {receiver.organizationLogoUrl ? (
-                    <img
-                      src={receiver.organizationLogoUrl}
-                      alt={`${receiver.name} logo`}
-                      className="h-12 w-12 rounded-xl border border-[#e5e5e5] object-cover flex-shrink-0 shadow-sm"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
-                      <Building2 className="w-6 h-6 text-white" />
-                    </div>
-                  )}
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <h3 className="text-lg text-[#000000] font-bold">{receiver.name}</h3>
-                      {emergencyMode && receiver.emergency && (
-                        <span className="flex items-center gap-1 px-2 py-0.5 bg-[#da1a32] text-white text-xs rounded-full font-medium">
-                          <Zap className="w-3 h-3" /> Emergency
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-gray-600">
-                      <MapPin className="w-4 h-4" />
-                      {receiver.location} • {distanceLabel(receiver)}
-                    </div>
-                  </div>
-                </div>
-              </div>
+        {sortedReceivers.map((receiver) => {
+          const receiverImages = Array.from(
+            new Set(
+              receiver.items.flatMap((item) =>
+                item.imageUrls && item.imageUrls.length > 0 ? item.imageUrls : item.imageUrl ? [item.imageUrl] : [],
+              ),
+            ),
+          );
+          const cardMainImage =
+            receiverImages[0] ||
+            getContextualDefaultNeedImage(receiver.items.map((item) => item.item).join(' ')) ||
+            DEFAULT_NEED_IMAGE;
 
-              {/* Emergency reason banner */}
-              {emergencyMode && receiver.emergency && (
-                <div className="mb-3 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded-xl text-xs text-[#da1a32] font-medium">
-                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                  {receiver.emergencyReason}
-                </div>
-              )}
+          return (
+            <Link key={receiver.id} href={`${resolvedDetailBasePath}/${receiver.id}`}>
+              <div
+                className={`bg-white rounded-2xl p-6 border-2 shadow-sm hover:shadow-md hover:border-[#da1a32] transition-all cursor-pointer ${
+                  emergencyMode && receiver.emergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'
+                }`}
+              >
+                <ImageCarousel
+                  images={receiverImages.length > 0 ? receiverImages : [cardMainImage]}
+                  altPrefix={`${receiver.name} need image`}
+                />
 
-              <div className="space-y-3">
-                {receiver.items.map((item, index) => (
-                  <div key={index} className="flex items-center justify-between p-3 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
-                    <div className="flex items-center gap-3">
-                      <Package className="w-5 h-5 text-[#000000]" />
-                      <div>
-                        <div className="font-medium text-[#000000]">{item.item}</div>
-                        <div className="text-sm text-gray-600">{item.quantity} units needed</div>
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-start gap-3">
+                    {receiver.organizationLogoUrl ? (
+                      <img
+                        src={receiver.organizationLogoUrl}
+                        alt={`${receiver.name} logo`}
+                        className="h-12 w-12 rounded-xl border border-[#e5e5e5] object-cover flex-shrink-0 shadow-sm"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 bg-[#da1a32] rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm">
+                        <Building2 className="w-6 h-6 text-white" />
+                      </div>
+                    )}
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <h3 className="text-lg text-[#000000] font-bold">{receiver.name}</h3>
+                        {emergencyMode && receiver.emergency ? (
+                          <span className="flex items-center gap-1 px-2 py-0.5 bg-[#da1a32] text-white text-xs rounded-full font-medium">
+                            <Zap className="w-3 h-3" /> Emergency
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-gray-600">
+                        <MapPin className="w-4 h-4" />
+                        {receiver.location} - {distanceLabel(receiver)}
                       </div>
                     </div>
-                    <span className={`px-3 py-1 text-xs rounded-full border ${urgencyColors[item.urgency]}`}>
-                      {item.urgency === 'high' && <AlertCircle className="w-3 h-3 inline mr-1" />}
-                      {item.urgency.charAt(0).toUpperCase() + item.urgency.slice(1)}
-                    </span>
                   </div>
-                ))}
-              </div>
+                </div>
 
-              <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
-                <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium text-right">
-                  View Details
+                {emergencyMode && receiver.emergency ? (
+                  <div className="mb-3 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-100 rounded-xl text-xs text-[#da1a32] font-medium">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    {receiver.emergencyReason}
+                  </div>
+                ) : null}
+
+                <div className="space-y-3">
+                  {receiver.items.map((item, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
+                      <div className="flex items-center gap-3">
+                        <Package className="w-5 h-5 text-[#000000]" />
+                        <div>
+                          <div className="font-medium text-[#000000]">{item.item}</div>
+                          <div className="text-sm text-gray-600">{item.quantity} units needed</div>
+                        </div>
+                      </div>
+                      <span className={`px-3 py-1 text-xs rounded-full border ${urgencyColors[item.urgency]}`}>
+                        {item.urgency === 'high' ? <AlertCircle className="w-3 h-3 inline mr-1" /> : null}
+                        {item.urgency.charAt(0).toUpperCase() + item.urgency.slice(1)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
+                  <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium text-right">View Details</div>
                 </div>
               </div>
-            </div>
-              );
-            })()}
-          </Link>
-        ))}
+            </Link>
+          );
+        })}
       </div>
     </div>
   );

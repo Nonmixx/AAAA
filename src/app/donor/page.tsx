@@ -5,6 +5,7 @@ import { fetchPublicBrowseReceivers } from '@/lib/publicNeeds';
 import { DEFAULT_NEED_IMAGE, getContextualDefaultNeedImage } from '@/lib/media';
 import styles from './page.module.css';
 import { UrgentNeedsSection, type UrgentNeedCard } from './UrgentNeedsSection';
+import { impactDeliveryCards } from './data/impactDeliveryCards';
 
 const stats = [
   { label: 'Donations', value: '15K+', icon: Package },
@@ -31,69 +32,6 @@ const features = [
   },
 ];
 
-const impactDeliveryCards = [
-  {
-    title: 'Education Support',
-    item: '15x Used IT Textbooks',
-    route: 'Subang Jaya -> Pages Community Library',
-    status: '⏳ Waiting for a driver',
-    badgeClass: 'bg-yellow-100 text-yellow-800',
-    deliveryCost: 'RM 15.00',
-    platformFee: 'RM 1.50',
-    payText: 'Sponsor Delivery • RM 16.50',
-  },
-  {
-    title: 'Healthcare & Accessibility',
-    item: '1x Foldable Wheelchair (Gently Used)',
-    route: 'Petaling Jaya -> Grace Old Folks Home',
-    status: '🔴 Urgent Need',
-    badgeClass: 'bg-red-100 text-red-700',
-    deliveryCost: 'RM 22.00',
-    platformFee: 'RM 2.20',
-    payText: 'Sponsor Delivery • RM 24.20',
-  },
-  {
-    title: 'Food Security',
-    item: '50kg Surplus Rice & Canned Goods',
-    route: 'Cheras -> Kechara Soup Kitchen',
-    status: '⏳ Waiting for a driver',
-    badgeClass: 'bg-yellow-100 text-yellow-800',
-    deliveryCost: 'RM 18.00',
-    platformFee: 'RM 1.80',
-    payText: 'Sponsor Delivery • RM 19.80',
-  },
-  {
-    title: 'Digital Equality',
-    item: '3x Refurbished Dell Laptops',
-    route: 'Bangsar -> Teach For Malaysia',
-    status: '⏳ Waiting for a driver',
-    badgeClass: 'bg-yellow-100 text-yellow-800',
-    deliveryCost: 'RM 12.00',
-    platformFee: 'RM 1.20',
-    payText: 'Sponsor Delivery • RM 13.20',
-  },
-  {
-    title: 'Disaster Relief',
-    item: '3 Boxes of Clean Raincoats & Blankets',
-    route: 'Shah Alam -> Red Crescent Society',
-    status: '🔴 Urgent Need',
-    badgeClass: 'bg-red-100 text-red-700',
-    deliveryCost: 'RM 25.00',
-    platformFee: 'RM 2.50',
-    payText: 'Sponsor Delivery • RM 27.50',
-  },
-  {
-    title: 'NGO Operations',
-    item: '4x Office Chairs & 1 Whiteboard',
-    route: 'KL Sentral (Corporate) -> Dignity for Children',
-    status: '⏳ High Priority pickup',
-    badgeClass: 'bg-orange-100 text-orange-700',
-    deliveryCost: 'RM 35.00',
-    platformFee: 'RM 3.50',
-    payText: 'Sponsor Delivery • RM 38.50',
-  },
-];
-
 const liveNotifications = [
   'New emergency request in Selangor',
   'Donation delivered successfully',
@@ -105,17 +43,12 @@ export default async function DonorHomePage() {
   const featuredNeeds: UrgentNeedCard[] = liveReceivers.slice(0, 3).map((receiver) => {
     const topItem = receiver.items[0];
     const requested = Math.max(topItem?.quantity ?? 0, 1);
-    const matched = 0;
     const receiverImages = Array.from(
       new Set(
         receiver.items.flatMap((item) =>
-          item.imageUrls && item.imageUrls.length > 0
-            ? item.imageUrls
-            : item.imageUrl
-              ? [item.imageUrl]
-              : []
-        )
-      )
+          item.imageUrls && item.imageUrls.length > 0 ? item.imageUrls : item.imageUrl ? [item.imageUrl] : [],
+        ),
+      ),
     );
     return {
       id: receiver.id,
@@ -130,7 +63,7 @@ export default async function DonorHomePage() {
       images: receiverImages.length > 1 ? receiverImages : undefined,
       need: topItem?.item ?? 'Essential Supplies',
       quantity: requested,
-      matched,
+      matched: 0,
       urgency: receiver.emergency ? 'high' : ((topItem?.urgency as 'high' | 'medium' | 'low') ?? 'medium'),
     };
   });
@@ -214,7 +147,10 @@ export default async function DonorHomePage() {
             {features.map((feature, i) => {
               const Icon = feature.icon;
               return (
-                <div key={i} className="bg-white rounded-xl p-8 border-2 border-[#edf2f4] hover:border-[#da1a32] hover:shadow-xl hover:-translate-y-1 transition-all duration-200">
+                <div
+                  key={i}
+                  className="bg-white rounded-xl p-8 border-2 border-[#edf2f4] hover:border-[#da1a32] hover:shadow-xl hover:-translate-y-1 transition-all duration-200"
+                >
                   <div className="w-14 h-14 bg-[#da1a32] rounded-lg flex items-center justify-center mb-4">
                     <Icon className="w-7 h-7 text-white" />
                   </div>
@@ -246,7 +182,6 @@ export default async function DonorHomePage() {
                 Every NGO completes identity, mission, and contact checks before they can receive matches.
               </p>
             </div>
-
             <div className="bg-white rounded-2xl border border-[#dbe2e8] p-6 shadow-sm">
               <div className="w-10 h-10 rounded-xl bg-[#000000] flex items-center justify-center mb-5">
                 <Sparkles className="w-5 h-5 text-[#da1a32]" />
@@ -256,7 +191,6 @@ export default async function DonorHomePage() {
                 Registration papers and authorization evidence are reviewed by our team before approval.
               </p>
             </div>
-
             <div className="bg-white rounded-2xl border border-[#dbe2e8] p-6 shadow-sm">
               <div className="w-10 h-10 rounded-xl bg-[#000000] flex items-center justify-center mb-5">
                 <TrendingUp className="w-5 h-5 text-[#da1a32]" />
@@ -295,23 +229,22 @@ export default async function DonorHomePage() {
 
           <div className="grid md:grid-cols-3 gap-6">
             {impactDeliveryCards.slice(0, 3).map((card) => (
-              <div key={card.title} className="bg-white border-2 border-[#edf2f4] rounded-2xl shadow-lg p-7 hover:-translate-y-1 hover:shadow-xl transition-all duration-200">
+              <div
+                key={card.title}
+                className="bg-white border-2 border-[#edf2f4] rounded-2xl shadow-lg p-7 hover:-translate-y-1 hover:shadow-xl transition-all duration-200"
+              >
                 <h3 className="text-xl font-bold text-[#000000] mb-5">{card.title}</h3>
-
                 <div className="space-y-4 mb-6">
                   <p className="text-base text-[#000000] font-normal">Item: {card.item}</p>
                   <p className="text-sm text-gray-500">From {card.route}</p>
                 </div>
-
                 <div className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold mb-6 ${card.badgeClass}`}>
                   {card.status}
                 </div>
-
                 <div className="border-t border-[#edf2f4] pt-4 space-y-2 mb-7 text-[#000000]">
                   <p className="text-sm text-gray-600">Delivery Cost: {card.deliveryCost}</p>
                   <p className="text-sm text-gray-600">Platform Fee: {card.platformFee}</p>
                 </div>
-
                 <Link href="/login?redirect=%2Fdonor%2Fcheckout">
                   <button className="w-full px-5 py-3 bg-[#da1a32] text-white rounded-lg hover:bg-[#b01528] hover:scale-[1.01] transition-all duration-200 font-semibold shadow-lg">
                     {card.payText}

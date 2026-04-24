@@ -6,9 +6,14 @@
 import { NextResponse } from 'next/server';
 import type { DonationImageAnalysisResult, PhotoVerificationStatus } from '../../../lib/donation-image-analysis';
 import { normalizeCondition } from '../../../lib/donation-image-analysis';
-
-const DEFAULT_BASE = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_VISION_MODEL = 'glm-4v-plus';
+import { buildWorkflowOrchestrationPromptSection } from '../../../lib/donation-assistant-workflow';
+import {
+  getAnthropicVisionModel,
+  getGlmVisionModel,
+  getZaiApiKey,
+  getZaiCandidateBases,
+  isAnthropicCompatibleBase,
+} from '../../../lib/zai-env';
 
 const MAX_BYTES = 4 * 1024 * 1024; // raw image file budget (approx before base64)
 
@@ -47,6 +52,16 @@ function parseVisionJson(raw: unknown): DonationImageAnalysisResult | null {
   const matchesCategory = o.matchesDeclaredCategory === true;
   const condition = normalizeCondition(typeof o.condition === 'string' ? o.condition : 'Good');
   const visibleSummary = typeof o.visibleSummary === 'string' ? o.visibleSummary.trim() : '';
+  const detectedCategory =
+    typeof o.detectedCategory === 'string' && o.detectedCategory.trim()
+      ? o.detectedCategory.trim().slice(0, 80)
+      : '';
+  const keyDetails = Array.isArray(o.keyDetails)
+    ? o.keyDetails
+        .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+        .map((x) => x.trim().slice(0, 120))
+        .slice(0, 4)
+    : [];
   const rejectReason = typeof o.rejectReason === 'string' ? o.rejectReason.trim() : '';
 
   let verification: PhotoVerificationStatus = 'passed';
@@ -71,6 +86,8 @@ function parseVisionJson(raw: unknown): DonationImageAnalysisResult | null {
   return {
     verification,
     condition,
+    detectedCategory: detectedCategory || undefined,
+    keyDetails: keyDetails.length ? keyDetails : undefined,
     visibleSummary: visibleSummary || 'Donation item photo.',
     guidance,
     source: 'glm-vision',
@@ -104,7 +121,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const apiKey = process.env.ZAI_API_KEY?.trim() || process.env.BIGMODEL_API_KEY?.trim();
+  const apiKey = getZaiApiKey();
   if (!apiKey) {
     return NextResponse.json({
       analysis: fallbackAnalysis(
@@ -113,16 +130,18 @@ export async function POST(req: Request) {
     });
   }
 
-  const base = (process.env.ZAI_API_BASE || DEFAULT_BASE).replace(/\/$/, '');
-  const model = process.env.GLM_VISION_MODEL?.trim() || DEFAULT_VISION_MODEL;
-  const url = `${base}/chat/completions`;
+  const model = getGlmVisionModel();
+  const anthropicVisionModel = getAnthropicVisionModel();
+  const baseCandidates = getZaiCandidateBases();
 
   const transcript =
     typeof body.transcript === 'string' && body.transcript.trim()
       ? body.transcript.trim().slice(-3500)
       : '(no transcript)';
 
-  const system = `You are DonateAI's **donation item photo validator**. You must look at the image carefully.
+  const system = `${buildWorkflowOrchestrationPromptSection('vision')}
+
+You are DonateAI's **donation item photo validator**. You must look at the image carefully.
 
 The donor previously described their donation category (may be broad) as:
 **DECLARED_CATEGORY:** ${detectedItem}
@@ -146,6 +165,8 @@ Output **only** valid JSON (no markdown) with keys:
 itemRelevant (boolean)
 matchesDeclaredCategory (boolean)
 condition ("Good"|"Worn"|"Damaged")
+detectedCategory (string, short, e.g. "Clothing", "Food packs", "Books")
+keyDetails (array of up to 4 short strings, visible facts only)
 visibleSummary (one short sentence, what you see)
 rejectReason (string, empty if itemRelevant and matchesDeclaredCategory)
 guidance (one short sentence for the donor: either what is wrong with the photo or the next step)`;
@@ -161,22 +182,86 @@ guidance (one short sentence for the donor: either what is wrong with the photo 
   ];
 
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.15,
-        max_tokens: 500,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: userContent as Record<string, unknown>[] },
-        ],
-      }),
-    });
+    let res: Response | null = null;
+    for (const base of baseCandidates) {
+      const anthropic = isAnthropicCompatibleBase(base);
+      const url = anthropic ? `${base}/v1/messages` : `${base}/chat/completions`;
+      const headerCandidates: Record<string, string>[] = anthropic
+        ? [
+            {
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+            {
+              Authorization: `Bearer ${apiKey}`,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+          ]
+        : [
+            { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            { 'api-key': apiKey, 'Content-Type': 'application/json' },
+          ];
+      for (const headers of headerCandidates) {
+        const payload = anthropic
+          ? {
+              model: anthropicVisionModel,
+              max_tokens: 500,
+              temperature: 0.15,
+              system,
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: mime,
+                        data: b64,
+                      },
+                    },
+                    {
+                      type: 'text',
+                      text: 'Analyze this image for donation screening. Reply with JSON only as specified.',
+                    },
+                  ],
+                },
+              ],
+            }
+          : {
+              model,
+              temperature: 0.15,
+              max_tokens: 500,
+              messages: [
+                { role: 'system', content: system },
+                { role: 'user', content: userContent as Record<string, unknown>[] },
+              ],
+            };
+        const candidate = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        if (candidate.ok) {
+          res = candidate;
+          break;
+        }
+        if (candidate.status !== 401 && candidate.status !== 404) {
+          res = candidate;
+          break;
+        }
+      }
+      if (res) break;
+    }
+    if (!res) {
+      return NextResponse.json({
+        analysis: fallbackAnalysis(
+          'Unable to reach GLM vision endpoint with current key/base. Please verify ZAI_API_KEY and ZAI_API_BASE, then retry.',
+        ),
+      });
+    }
 
     if (!res.ok) {
       const t = await res.text().catch(() => '');
@@ -188,8 +273,13 @@ guidance (one short sentence for the donor: either what is wrong with the photo 
       });
     }
 
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const content = data.choices?.[0]?.message?.content?.trim();
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+      content?: { type?: string; text?: string }[];
+    };
+    const content =
+      data.choices?.[0]?.message?.content?.trim() ||
+      data.content?.find((c) => c.type === 'text')?.text?.trim();
     if (!content) {
       return NextResponse.json({
         analysis: fallbackAnalysis('No response from vision model. Please try uploading the photo again.'),

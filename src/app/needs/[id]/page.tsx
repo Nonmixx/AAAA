@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { DonorLayout } from '../../components/layouts/DonorLayout';
 import { fetchPublicOrganizationDetail } from '@/lib/publicNeeds';
 import { PublicNeedDetailView } from './PublicNeedDetailView';
+import { NeedDetailLegacy } from './NeedDetailLegacy';
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -14,6 +15,14 @@ export default async function PublicOrganizationDetailPage({ params }: PageProps
     return (
       <DonorLayout>
         <PublicNeedDetailView data={live} />
+      </DonorLayout>
+    );
+  }
+
+  if (/^\d+$/.test(id)) {
+    return (
+      <DonorLayout>
+        <NeedDetailLegacy />
       </DonorLayout>
     );
   }

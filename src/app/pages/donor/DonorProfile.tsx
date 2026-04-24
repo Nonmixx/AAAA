@@ -1,5 +1,7 @@
+'use client';
+
 import { useEffect, useMemo, useState } from 'react';
-import { User, Mail, Phone, ShieldCheck, Heart, Package, TrendingUp, MapPin } from 'lucide-react';
+import { User, Mail, Phone, Heart, Package, TrendingUp, MapPin } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 
 type ProfileForm = {
@@ -103,7 +105,6 @@ export function DonorProfile() {
           .select('id, full_name, phone, address')
           .eq('id', user.id)
           .maybeSingle();
-
         if (profileError) throw profileError;
 
         setForm({
@@ -118,7 +119,6 @@ export function DonorProfile() {
           .eq('donor_profile_id', user.id)
           .order('created_at', { ascending: false })
           .limit(6);
-
         if (donationsError) throw donationsError;
         setDonationHistory((donations ?? []) as DonationHistoryRow[]);
       } catch (err) {
@@ -135,17 +135,16 @@ export function DonorProfile() {
     const totalDonations = donationHistory.length;
     const totalItems = donationHistory.reduce((sum, row) => sum + (row.quantity_total ?? 0), 0);
     const organizationsHelped = new Set(
-      donationHistory
-        .flatMap((row) => {
-          const allocations = row.donation_allocations ?? [];
-          return allocations
-            .map((allocation) => {
-              const needRecord = Array.isArray(allocation.needs) ? allocation.needs[0] : allocation.needs;
-              const orgRecord = Array.isArray(needRecord?.organizations) ? needRecord?.organizations[0] : needRecord?.organizations;
-              return orgRecord?.name ?? null;
-            })
-            .filter(Boolean) as string[];
-        }),
+      donationHistory.flatMap((row) => {
+        const allocations = row.donation_allocations ?? [];
+        return allocations
+          .map((allocation) => {
+            const needRecord = Array.isArray(allocation.needs) ? allocation.needs[0] : allocation.needs;
+            const orgRecord = Array.isArray(needRecord?.organizations) ? needRecord?.organizations[0] : needRecord?.organizations;
+            return orgRecord?.name ?? null;
+          })
+          .filter(Boolean) as string[];
+      }),
     ).size;
 
     return { totalDonations, totalItems, organizationsHelped };
@@ -157,7 +156,6 @@ export function DonorProfile() {
     setSaving(true);
     setErrorMessage(null);
     setSuccessMessage(null);
-
     try {
       const supabase = getSupabaseBrowserClient();
       const { error } = await supabase
@@ -168,9 +166,12 @@ export function DonorProfile() {
           address: form.address || null,
         })
         .eq('id', profileId);
-
       if (error) throw error;
+
       setSuccessMessage('Profile updated successfully.');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('donor-profile-updated'));
+      }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to save donor profile.');
     } finally {
@@ -186,15 +187,10 @@ export function DonorProfile() {
       </div>
 
       {errorMessage && (
-        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {errorMessage}
-        </div>
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>
       )}
-
       {successMessage && (
-        <div className="mb-6 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-          {successMessage}
-        </div>
+        <div className="mb-6 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{successMessage}</div>
       )}
 
       <div className="grid lg:grid-cols-3 gap-6">
@@ -216,32 +212,30 @@ export function DonorProfile() {
                 </div>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm mb-2 text-[#000000] font-medium">Email</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input
-                      type="email"
-                      value={email}
-                      readOnly
-                      className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl bg-[#edf2f4] text-gray-600"
-                    />
-                  </div>
+              <div>
+                <label className="block text-sm mb-2 text-[#000000] font-medium">Email</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <input
+                    type="email"
+                    value={email}
+                    readOnly
+                    className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl bg-[#edf2f4] text-gray-600"
+                  />
                 </div>
+              </div>
 
-                <div>
-                  <label className="block text-sm mb-2 text-[#000000] font-medium">Phone</label>
-                  <div className="relative">
-                    <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <input
-                      type="tel"
-                      value={form.phone}
-                      onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
-                      disabled={loading}
-                      className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-[#edf2f4]"
-                    />
-                  </div>
+              <div>
+                <label className="block text-sm mb-2 text-[#000000] font-medium">Phone</label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <input
+                    type="tel"
+                    value={form.phone}
+                    onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
+                    disabled={loading}
+                    className="w-full pl-10 pr-4 py-3 border-2 border-[#e5e5e5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-[#edf2f4]"
+                  />
                 </div>
               </div>
 
@@ -273,11 +267,11 @@ export function DonorProfile() {
           <div className="bg-white rounded-2xl p-8 border-2 border-[#e5e5e5] shadow-sm">
             <h2 className="text-xl mb-6 text-[#000000] font-bold">Donation History</h2>
             <div className="space-y-4">
-              {!loading && donationHistory.length === 0 && (
+              {!loading && donationHistory.length === 0 ? (
                 <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4] px-4 py-6 text-sm text-gray-600">
                   No donations recorded yet.
                 </div>
-              )}
+              ) : null}
 
               {donationHistory.map((donation) => (
                 <div key={donation.id} className="flex items-center gap-4 p-4 bg-[#edf2f4] rounded-xl border border-[#e5e5e5]">
