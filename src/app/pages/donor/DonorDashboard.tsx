@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   Heart,
@@ -16,6 +17,8 @@ import {
   Baby,
   Smile,
 } from 'lucide-react';
+import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { useDonorContext } from '../../context/DonorContext';
 
 const stats = [
   { label: 'Total Donations', value: '24', icon: Package, color: 'bg-[#da1a32]' },
@@ -57,29 +60,33 @@ const statusConfig: Record<string, { label: string; color: string; icon: React.E
   delivered: { label: 'Delivered', color: 'bg-green-50 text-green-600 border-green-100', icon: CheckCircle2 },
 };
 
-const urgentNeeds = [
-  {
-    id: '1',
-    org: 'Hope Orphanage',
-    item: 'Food Packs',
-    quantity: 100,
-    location: 'Kuala Lumpur',
-  },
-  {
-    id: '2',
-    org: 'Care Foundation',
-    item: 'Medical Supplies',
-    quantity: 30,
-    location: 'Petaling Jaya',
-  },
-  {
-    id: '4',
-    org: 'Elderly Care Center',
-    item: 'Wheelchairs',
-    quantity: 10,
-    location: 'Shah Alam',
-  },
-];
+type NeedOrganization = {
+  name: string;
+  address: string | null;
+  verification_status: 'pending' | 'approved' | 'rejected' | null;
+  is_emergency?: boolean | null;
+  emergency_reason?: string | null;
+};
+
+type NeedRecord = {
+  id: string;
+  title: string;
+  category: string;
+  quantity_requested: number;
+  quantity_fulfilled: number;
+  urgency: 'low' | 'medium' | 'high';
+  organizations: NeedOrganization | NeedOrganization[] | null;
+};
+
+function getOrganizationRecord(organization: NeedRecord['organizations']) {
+  if (Array.isArray(organization)) return organization[0] ?? null;
+  return organization;
+}
+
+function getLocationLabel(address?: string | null) {
+  if (!address) return 'Location pending';
+  return address.split(',')[0]?.trim() || address;
+}
 
 const quickActions = [
   {
@@ -113,6 +120,58 @@ const quickActions = [
 ];
 
 export function DonorDashboard() {
+  const { emergencyMode } = useDonorContext();
+  const [urgentNeeds, setUrgentNeeds] = useState<NeedRecord[]>([]);
+  const [urgentNeedsLoading, setUrgentNeedsLoading] = useState(true);
+
+  useEffect(() => {
+    const loadUrgentNeeds = async () => {
+      setUrgentNeedsLoading(true);
+
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data, error } = await supabase
+          .from('needs')
+          .select('id, title, category, quantity_requested, quantity_fulfilled, urgency, organizations(name, address, verification_status, is_emergency, emergency_reason)')
+          .eq('status', 'active')
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        setUrgentNeeds((data ?? []) as NeedRecord[]);
+      } catch {
+        setUrgentNeeds([]);
+      } finally {
+        setUrgentNeedsLoading(false);
+      }
+    };
+
+    void loadUrgentNeeds();
+  }, []);
+
+  const displayedUrgentNeeds = useMemo(() => {
+    const visible = urgentNeeds.filter((need) => {
+      const organization = getOrganizationRecord(need.organizations);
+      return !!organization;
+    });
+
+    const sorted = [...visible].sort((a, b) => {
+      const orgA = getOrganizationRecord(a.organizations);
+      const orgB = getOrganizationRecord(b.organizations);
+      const emergencyA = orgA?.is_emergency ? 1 : 0;
+      const emergencyB = orgB?.is_emergency ? 1 : 0;
+      if (emergencyB !== emergencyA) return emergencyB - emergencyA;
+
+      const urgencyRank: Record<NeedRecord['urgency'], number> = { high: 3, medium: 2, low: 1 };
+      return urgencyRank[b.urgency] - urgencyRank[a.urgency];
+    });
+
+    if (emergencyMode) {
+      return sorted.slice(0, 3);
+    }
+
+    return sorted.filter((need) => need.urgency === 'high' || getOrganizationRecord(need.organizations)?.is_emergency).slice(0, 3);
+  }, [emergencyMode, urgentNeeds]);
+
   return (
     <div className="min-h-screen bg-white">
       {/* Welcome Banner */}
@@ -230,36 +289,59 @@ export function DonorDashboard() {
               </Link>
             </div>
             <div className="space-y-4">
-              {urgentNeeds.map((need) => (
-                <div
-                  key={need.id}
-                  className="bg-white border-2 border-[#e5e5e5] rounded-2xl p-4 hover:border-[#da1a32] transition-all hover:shadow-sm"
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <div className="font-bold text-[#000000] text-sm">{need.org}</div>
-                      <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
-                        <MapPin className="w-3 h-3" />
-                        {need.location}
-                      </div>
-                    </div>
-                    <span className="px-2 py-0.5 bg-red-50 text-[#da1a32] text-xs rounded-full border border-red-100 font-medium flex items-center gap-1">
-                      <AlertCircle className="w-3 h-3" />
-                      Urgent
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-gray-600">
-                      <span className="font-medium text-[#000000]">{need.quantity}</span> {need.item}
-                    </div>
-                    <Link href={`/donor/needs/${need.id}`}>
-                      <button className="text-xs px-3 py-1.5 bg-[#000000] text-white rounded-lg hover:bg-[#da1a32] transition-all font-medium">
-                        Donate
-                      </button>
-                    </Link>
-                  </div>
+              {urgentNeedsLoading && (
+                <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-4 text-sm text-gray-500">
+                  Loading urgent needs...
                 </div>
-              ))}
+              )}
+
+              {!urgentNeedsLoading && displayedUrgentNeeds.length === 0 && (
+                <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-4 text-sm text-gray-500">
+                  No urgent needs available right now.
+                </div>
+              )}
+
+              {displayedUrgentNeeds.map((need) => {
+                const organization = getOrganizationRecord(need.organizations);
+                if (!organization) return null;
+
+                const quantityRemaining = Math.max(0, need.quantity_requested - need.quantity_fulfilled);
+                const urgentLabel = organization.is_emergency ? 'Emergency' : 'Urgent';
+
+                return (
+                  <div
+                    key={need.id}
+                    className="bg-white border-2 border-[#e5e5e5] rounded-2xl p-4 hover:border-[#da1a32] transition-all hover:shadow-sm"
+                  >
+                    <div className="flex items-start justify-between mb-3 gap-3">
+                      <div>
+                        <div className="font-bold text-[#000000] text-sm">{organization.name}</div>
+                        <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
+                          <MapPin className="w-3 h-3" />
+                          {getLocationLabel(organization.address)}
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 bg-red-50 text-[#da1a32] text-xs rounded-full border border-red-100 font-medium flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        {urgentLabel}
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-600 mb-3">
+                      <span className="font-medium text-[#000000]">{need.title}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm text-gray-600">
+                        <span className="font-medium text-[#000000]">{quantityRemaining}</span> remaining
+                      </div>
+                      <Link href={`/donor/needs/${need.id}`}>
+                        <button className="text-xs px-3 py-1.5 bg-[#000000] text-white rounded-lg hover:bg-[#da1a32] transition-all font-medium">
+                          Donate
+                        </button>
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
 
             {/* Impact Card */}

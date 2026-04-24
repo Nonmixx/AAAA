@@ -55,6 +55,13 @@ export type PublicOrganizationDetail = {
   needs: PublicNeedRow[];
 };
 
+export type PublicNeedWithOrganization = PublicNeedRow & {
+  organization: Pick<
+    PublicOrganizationRow,
+    'id' | 'name' | 'location_name' | 'address' | 'latitude' | 'longitude' | 'verification_status' | 'is_emergency' | 'emergency_reason'
+  >;
+};
+
 type NeedWithOrgJoin = {
   id: string;
   created_at: string;
@@ -198,6 +205,92 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
     if (emergencyRank !== 0) return emergencyRank;
     return a.name.localeCompare(b.name);
   });
+}
+
+export async function fetchPublicActiveNeeds(): Promise<PublicNeedWithOrganization[]> {
+  const supabase = await getSupabaseServerClientOrNull();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('needs')
+    .select(
+      `
+      id,
+      title,
+      description,
+      category,
+      quantity_requested,
+      quantity_fulfilled,
+      urgency,
+      is_emergency,
+      needed_by,
+      image_url,
+      organizations!inner (
+        id,
+        name,
+        location_name,
+        address,
+        latitude,
+        longitude,
+        verification_status,
+        is_emergency,
+        emergency_reason
+      )
+    `
+    )
+    .eq('status', 'active')
+    .order('created_at', { ascending: false });
+
+  if (error || !data?.length) return [];
+
+  return (data as unknown as NeedWithOrgJoin[])
+    .map((row) => {
+      const organization = (Array.isArray(row.organizations) ? row.organizations[0] : row.organizations) as
+        | PublicOrganizationRow
+        | undefined;
+      if (!organization?.id) return null;
+
+      return {
+        id: row.id,
+        title: row.title,
+        description: row.description,
+        category: row.category,
+        quantity_requested: row.quantity_requested,
+        quantity_fulfilled: row.quantity_fulfilled,
+        urgency: mapUrgency(row.urgency),
+        is_emergency: row.is_emergency,
+        needed_by: row.needed_by,
+        image_url: row.image_url,
+        organization: {
+          id: organization.id,
+          name: organization.name,
+          location_name: organization.location_name,
+          address: organization.address,
+          latitude: organization.latitude,
+          longitude: organization.longitude,
+          verification_status: organization.verification_status,
+          is_emergency: organization.is_emergency,
+          emergency_reason: organization.emergency_reason,
+        },
+      } satisfies PublicNeedWithOrganization;
+    })
+    .filter((need): need is PublicNeedWithOrganization => Boolean(need))
+    .sort((a, b) =>
+      compareNeedPriority(
+        {
+          isEmergency: a.is_emergency || a.organization.is_emergency,
+          urgency: a.is_emergency || a.organization.is_emergency ? 'high' : a.urgency,
+          quantityRequested: a.quantity_requested,
+          quantityFulfilled: a.quantity_fulfilled,
+        },
+        {
+          isEmergency: b.is_emergency || b.organization.is_emergency,
+          urgency: b.is_emergency || b.organization.is_emergency ? 'high' : b.urgency,
+          quantityRequested: b.quantity_requested,
+          quantityFulfilled: b.quantity_fulfilled,
+        }
+      )
+    );
 }
 
 export async function fetchPublicOrganizationDetail(organizationId: string): Promise<PublicOrganizationDetail | null> {
