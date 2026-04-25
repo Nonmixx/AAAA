@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Building2, MapPin, Package, AlertCircle, Zap, ImageIcon } from 'lucide-react';
 import { useDonorContext } from '../../context/DonorContext';
+import type { PublicBrowseReceiver } from '@/lib/publicNeeds';
 import {
   getNeedDisplayImage,
   getNeedMediaSource,
@@ -23,6 +24,7 @@ type NeedOrganization = {
 
 type NeedRecord = {
   id: string;
+  detailId?: string;
   title: string;
   description: string;
   category: string;
@@ -47,6 +49,38 @@ function getMediaBadgeLabel(source: NeedMediaSource) {
   if (source === 'need-image') return 'Need photo';
   if (source === 'organization-logo') return 'Organization logo';
   return 'Placeholder';
+}
+
+type ReceiverNeedsListProps = {
+  detailBasePath?: string;
+  showBackButton?: boolean;
+  backHref?: string;
+  liveReceivers?: PublicBrowseReceiver[];
+};
+
+function mapPublicReceiversToNeeds(liveReceivers: PublicBrowseReceiver[]): NeedRecord[] {
+  return liveReceivers.flatMap((receiver) =>
+    receiver.items.map((item, index) => ({
+      id: `${receiver.id}-${index}`,
+      detailId: receiver.id,
+      title: item.item,
+      description: `Support ${receiver.name} with ${item.item}.`,
+      category: item.category,
+      image_url: item.imageUrl ?? receiver.organizationLogoUrl ?? null,
+      quantity_requested: item.quantity,
+      quantity_fulfilled: 0,
+      urgency: item.urgency,
+      organizations: {
+        id: receiver.id,
+        name: receiver.name,
+        address: receiver.location,
+        logo_url: receiver.organizationLogoUrl ?? null,
+        verification_status: 'pending',
+        is_emergency: receiver.emergency,
+        emergency_reason: receiver.emergencyReason,
+      },
+    })),
+  );
 }
 
 function NeedVisual({
@@ -109,7 +143,12 @@ function getVerificationBadge(status: NeedOrganization['verification_status']) {
   };
 }
 
-export function ReceiverNeedsList() {
+export function ReceiverNeedsList({
+  detailBasePath = '/donor/needs',
+  showBackButton = false,
+  backHref = '/donor',
+  liveReceivers,
+}: ReceiverNeedsListProps) {
   const { emergencyMode } = useDonorContext();
   const [needs, setNeeds] = useState<NeedRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,6 +158,13 @@ export function ReceiverNeedsList() {
 
   useEffect(() => {
     const loadNeeds = async () => {
+      if (liveReceivers && liveReceivers.length > 0) {
+        setNeeds(mapPublicReceiversToNeeds(liveReceivers));
+        setErrorMessage(null);
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       setErrorMessage(null);
 
@@ -128,7 +174,7 @@ export function ReceiverNeedsList() {
         if (!response.ok) {
           throw new Error(json.error || 'Unable to load receiver needs.');
         }
-        setNeeds(json.needs ?? []);
+        setNeeds((json.needs ?? []).map((need) => ({ ...need, detailId: need.id })));
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : 'Unable to load receiver needs.');
       } finally {
@@ -137,7 +183,7 @@ export function ReceiverNeedsList() {
     };
 
     void loadNeeds();
-  }, []);
+  }, [liveReceivers]);
 
   const categories = useMemo(() => {
     return [...new Set(needs.map((need) => need.category).filter(Boolean))];
@@ -167,8 +213,16 @@ export function ReceiverNeedsList() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-8">
+        {showBackButton && (
+          <div className="mb-4">
+            <Link href={backHref}>
+              <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
+                Back
+              </button>
+            </Link>
+          </div>
+        )}
         <h1 className="text-3xl mb-2 text-[#000000] font-bold">Organizations in Need</h1>
-        <p className="text-gray-600">Browse live receiver needs from Supabase</p>
       </div>
 
       {emergencyMode && (
@@ -226,6 +280,7 @@ export function ReceiverNeedsList() {
         {filteredNeeds.map((need) => {
           const organization = getOrganizationRecord(need.organizations);
           if (!organization) return null;
+          const detailId = need.detailId ?? need.id;
 
           const mediaSource = getNeedMediaSource(need.image_url, organization.logo_url);
           const imageUrl = getNeedDisplayImage(need.image_url, organization.logo_url);
@@ -234,7 +289,7 @@ export function ReceiverNeedsList() {
           const verificationBadge = getVerificationBadge(organization.verification_status);
 
           return (
-            <Link key={need.id} href={`/donor/needs/${need.id}`}>
+            <Link key={need.id} href={`${detailBasePath}/${detailId}`}>
               <div
                 className={`bg-white rounded-2xl overflow-hidden border-2 shadow-sm hover:shadow-md hover:border-[#da1a32] transition-all cursor-pointer ${
                   emergencyMode && isEmergency ? 'border-[#da1a32] ring-2 ring-red-100' : 'border-[#e5e5e5]'
@@ -310,9 +365,9 @@ export function ReceiverNeedsList() {
                     {need.description}
                   </p>
 
-                  <div className="mt-4 pt-4 border-t border-[#e5e5e5]">
-                    <div className="text-[#da1a32] text-sm hover:text-[#b01528] font-medium">
-                      View Details {'->'}
+                  <div className="mt-4 flex justify-end border-t border-[#e5e5e5] pt-4">
+                    <div className="text-sm font-medium text-[#da1a32] hover:text-[#b01528]">
+                      View Details
                     </div>
                   </div>
                 </div>
