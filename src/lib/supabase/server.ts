@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 
 export async function getSupabaseServerClient() {
   const cookieStore = await cookies();
@@ -13,14 +13,18 @@ export async function getSupabaseServerClient() {
 
   return createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
-      get(name: string) {
-        return cookieStore.get(name)?.value;
+      getAll() {
+        return cookieStore.getAll();
       },
-      set(name: string, value: string, options: Record<string, unknown>) {
-        cookieStore.set(name, value, options);
-      },
-      remove(name: string, options: Record<string, unknown>) {
-        cookieStore.set(name, '', { ...options, maxAge: 0 });
+      setAll(cookiesToSet, _responseHeaders) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options as CookieOptions);
+          });
+        } catch {
+          // Next.js: cookies can only be set in a Route Handler or Server Action.
+          // Server Components may still read the session; refresh in middleware if needed.
+        }
       },
     },
   });
