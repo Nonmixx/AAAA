@@ -84,40 +84,16 @@ export async function updateDonorProfile(input: { fullName: string; phone: strin
   if (authError) throw authError;
 }
 
-// --- Notification preferences & emergency UI (stored on auth user_metadata; survives logout/login) ---
-
-const META_NOTIF_KEY = 'donor_notification_prefs';
-const META_EMERGENCY_UI_KEY = 'donor_emergency_mode_ui';
+// --- Notification preferences & emergency UI (stored in user_preferences table) ---
 
 export const DONOR_NOTIFICATION_KEYS = [
   'allocationCompleted',
   'deliveryScheduled',
   'itemDelivered',
-  'proofOfDelivery',
   'emergencyAlerts',
 ] as const;
 
 export type DonorNotificationPrefs = Record<(typeof DONOR_NOTIFICATION_KEYS)[number], boolean>;
-
-function defaultNotificationPrefs(): DonorNotificationPrefs {
-  return {
-    allocationCompleted: true,
-    deliveryScheduled: true,
-    itemDelivered: true,
-    proofOfDelivery: true,
-    emergencyAlerts: true,
-  };
-}
-
-export function parseDonorNotificationPrefs(raw: unknown): DonorNotificationPrefs {
-  const d = defaultNotificationPrefs();
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return d;
-  const o = raw as Record<string, unknown>;
-  for (const k of DONOR_NOTIFICATION_KEYS) {
-    if (typeof o[k] === 'boolean') (d as Record<string, boolean>)[k] = o[k] as boolean;
-  }
-  return d;
-}
 
 export async function fetchDonorNotificationPrefsAsBooleans(): Promise<boolean[]> {
   const supabase = getSupabaseBrowserClient();
@@ -125,8 +101,21 @@ export async function fetchDonorNotificationPrefsAsBooleans(): Promise<boolean[]
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return DONOR_NOTIFICATION_KEYS.map(() => true);
-  const p = parseDonorNotificationPrefs(user.user_metadata?.[META_NOTIF_KEY]);
-  return DONOR_NOTIFICATION_KEYS.map((k) => p[k]);
+
+  const { data: prefs, error } = await supabase
+    .from('user_preferences')
+    .select('allocation_completed, delivery_scheduled, item_delivered, emergency_mode_alerts')
+    .eq('profile_id', user.id)
+    .single();
+
+  if (error) throw error;
+
+  return [
+    prefs?.allocation_completed ?? true,
+    prefs?.delivery_scheduled ?? true,
+    prefs?.item_delivered ?? true,
+    prefs?.emergency_mode_alerts ?? true,
+  ];
 }
 
 export async function saveDonorNotificationPrefsFromBooleans(states: boolean[]) {
@@ -137,14 +126,16 @@ export async function saveDonorNotificationPrefsFromBooleans(states: boolean[]) 
   } = await supabase.auth.getUser();
   if (userError || !user) throw new Error('Not signed in');
 
-  const prefs = defaultNotificationPrefs();
-  DONOR_NOTIFICATION_KEYS.forEach((k, i) => {
-    prefs[k] = !!states[i];
-  });
+  const { error } = await supabase
+    .from('user_preferences')
+    .update({
+      allocation_completed: states[0] ?? true,
+      delivery_scheduled: states[1] ?? true,
+      item_delivered: states[2] ?? true,
+      emergency_mode_alerts: states[3] ?? true,
+    })
+    .eq('profile_id', user.id);
 
-  const { error } = await supabase.auth.updateUser({
-    data: { [META_NOTIF_KEY]: prefs },
-  });
   if (error) throw error;
 }
 
@@ -154,13 +145,29 @@ export async function fetchDonorEmergencyModeUi(): Promise<boolean> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return false;
-  return user.user_metadata?.[META_EMERGENCY_UI_KEY] === true;
+
+  const { data: prefs, error } = await supabase
+    .from('user_preferences')
+    .select('emergency_mode_view')
+    .eq('profile_id', user.id)
+    .single();
+
+  if (error) throw error;
+  return prefs?.emergency_mode_view ?? false;
 }
 
 export async function saveDonorEmergencyModeUi(value: boolean) {
   const supabase = getSupabaseBrowserClient();
-  const { error } = await supabase.auth.updateUser({
-    data: { [META_EMERGENCY_UI_KEY]: value },
-  });
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+  if (userError || !user) throw new Error('Not signed in');
+
+  const { error } = await supabase
+    .from('user_preferences')
+    .update({ emergency_mode_view: value })
+    .eq('profile_id', user.id);
+
   if (error) throw error;
 }

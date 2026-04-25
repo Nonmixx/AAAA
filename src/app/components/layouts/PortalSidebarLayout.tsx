@@ -36,6 +36,20 @@ export function PortalSidebarLayout({
   const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
+    // Default to hidden only on /donor/dashboard, otherwise use stored preference or default open
+    const stored = localStorage.getItem('sidebarOpen');
+    const defaultOpen = pathname !== '/donor/dashboard' && (stored === null ? true : stored === 'true');
+    setSidebarOpen(defaultOpen);
+  }, [pathname]);
+
+  useEffect(() => {
+    // Save sidebar state to localStorage, but only if not on dashboard
+    if (pathname !== '/donor/dashboard') {
+      localStorage.setItem('sidebarOpen', sidebarOpen.toString());
+    }
+  }, [sidebarOpen, pathname]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setSidebarOpen(false);
