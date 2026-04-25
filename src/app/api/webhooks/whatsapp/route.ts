@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 import { validateTwilioWebhookSignature } from '@/lib/disaster/providers/whatsapp';
 import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 
+function shouldSkipTwilioSignatureValidation() {
+  return process.env.WHATSAPP_WEBHOOK_SKIP_SIGNATURE?.trim().toLowerCase() === 'true';
+}
+
 function normalizePhone(value: string) {
   return value.replace(/^whatsapp:/i, '').replace(/[^\d+]/g, '');
 }
@@ -53,7 +57,7 @@ export async function POST(req: Request) {
     metadata = Object.fromEntries(params.entries());
   }
 
-  if (!isTwilioRequest(req, params)) {
+  if (!shouldSkipTwilioSignatureValidation() && !isTwilioRequest(req, params)) {
     return NextResponse.json({ error: 'Invalid Twilio signature.' }, { status: 403 });
   }
 
