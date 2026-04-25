@@ -161,7 +161,7 @@ export async function activateDisasterEvent(
 
   if (eventError) throw eventError;
 
-  const { error: platformError } = await supabase
+  const { data: updatedPlatformRow, error: platformError } = await supabase
     .from('platform_status')
     .update({
       mode: 'crisis',
@@ -170,9 +170,14 @@ export async function activateDisasterEvent(
       activated_by: profileId,
       updated_at: now,
     })
-    .eq('status_key', 'primary');
+    .eq('status_key', 'primary')
+    .select('status_key')
+    .maybeSingle();
 
   if (platformError) throw platformError;
+  if (!updatedPlatformRow) {
+    throw new Error('platform_status row with status_key="primary" is missing.');
+  }
 
   await pushAdminNotification(supabase, {
     title: 'Crisis Mode Activated',
@@ -197,14 +202,21 @@ export async function runDetectionSweep(supabase: SupabaseClient) {
 
   const createdEvents: DisasterEventRecord[] = [];
   const escalatedEvents: DisasterEventRecord[] = [];
+  const skippedSignals: Array<{
+    signalId: string;
+    confidenceScore: number;
+    reason: string;
+    sourceName: string;
+    normalizedText: string;
+  }> = [];
 
   for (const signal of (data ?? []) as (IncidentSignalRecord & { metadata?: Json })[]) {
-    if (signal.confidence_score >= 0.72) {
+    if (signal.confidence_score >= 0.58) {
       const event = await createDisasterEvent(supabase, {
         title: eventTitleForSignal(signal.detected_locations, signal.detected_keywords),
         disasterType:
           signal.detected_keywords.find((keyword) => ['banjir', 'flood', 'landslide'].includes(keyword)) ?? 'disaster',
-        severity: signal.confidence_score >= 0.82 ? 'high' : 'medium',
+        severity: signal.confidence_score >= 0.78 ? 'high' : 'medium',
         affectedRegions: signal.detected_locations,
         source: signal.source_name,
         activationMode: 'auto',
@@ -225,6 +237,14 @@ export async function runDetectionSweep(supabase: SupabaseClient) {
 
       if (linkError) throw linkError;
       createdEvents.push(event);
+    } else {
+      skippedSignals.push({
+        signalId: signal.id,
+        confidenceScore: signal.confidence_score,
+        reason: 'Confidence below auto-create threshold of 0.58.',
+        sourceName: signal.source_name,
+        normalizedText: signal.normalized_text,
+      });
     }
   }
 
@@ -258,5 +278,10 @@ export async function runDetectionSweep(supabase: SupabaseClient) {
   return {
     createdEvents,
     escalatedEvents,
+    skippedSignals,
+    thresholds: {
+      createEventAt: 0.58,
+      highSeverityAt: 0.78,
+    },
   };
 }

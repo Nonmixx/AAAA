@@ -65,6 +65,7 @@ export default function AdminDisasterConsolePage() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [jobResult, setJobResult] = useState<string | null>(null);
   const [eventForm, setEventForm] = useState({
     title: '',
     disasterType: 'flood',
@@ -106,6 +107,7 @@ export default function AdminDisasterConsolePage() {
   const submitEvent = async () => {
     setBusyAction('event');
     setErrorMessage(null);
+    setJobResult(null);
     try {
       const response = await fetch('/api/disaster-events', {
         method: 'POST',
@@ -138,6 +140,7 @@ export default function AdminDisasterConsolePage() {
   const submitSignal = async () => {
     setBusyAction('signal');
     setErrorMessage(null);
+    setJobResult(null);
     try {
       const response = await fetch('/api/incident-signals', {
         method: 'POST',
@@ -165,13 +168,34 @@ export default function AdminDisasterConsolePage() {
   const runSweep = async () => {
     setBusyAction('sweep');
     setErrorMessage(null);
+    setJobResult(null);
     try {
       const response = await fetch('/api/jobs/disaster-detection', { method: 'POST' });
       const json = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(json.error || 'Unable to run detection sweep.');
+      setJobResult(JSON.stringify(json, null, 2));
       await loadOverview();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Unable to run detection sweep.');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const runExternalSignalIngest = async (dryRun: boolean) => {
+    setBusyAction(dryRun ? 'ingest-preview' : 'ingest-run');
+    setErrorMessage(null);
+    setJobResult(null);
+    try {
+      const response = await fetch(`/api/jobs/disaster-signal-ingest${dryRun ? '?dryRun=1' : ''}`, {
+        method: 'POST',
+      });
+      const json = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(json.error || 'Unable to run disaster signal ingest.');
+      setJobResult(JSON.stringify(json, null, 2));
+      await loadOverview();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to run disaster signal ingest.');
     } finally {
       setBusyAction(null);
     }
@@ -194,6 +218,16 @@ export default function AdminDisasterConsolePage() {
 
   return (
     <div className="mx-auto max-w-7xl p-6">
+      {overview?.platformStatus?.mode === 'crisis' && activeEvent ? (
+        <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-5 py-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[#da1a32]">Crisis Mode Active</div>
+          <div className="mt-1 text-lg font-bold text-[#000000]">{activeEvent.title}</div>
+          <p className="mt-1 text-sm text-gray-700">
+            The platform is currently prioritizing disaster workflows for {activeEvent.affected_regions.join(', ') || 'the active region'}.
+          </p>
+        </div>
+      ) : null}
+
       <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-[#000000]">Disaster Command Console</h1>
@@ -390,6 +424,22 @@ export default function AdminDisasterConsolePage() {
               <Radio className="h-4 w-4" />
               {busyAction === 'sweep' ? 'Running sweep...' : 'Run detection sweep'}
             </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={() => void runExternalSignalIngest(true)}
+                disabled={busyAction === 'ingest-preview'}
+                className="rounded-xl border border-[#da1a32] px-4 py-2 text-sm font-medium text-[#da1a32] transition-colors hover:bg-[#da1a32] hover:text-white disabled:opacity-50"
+              >
+                {busyAction === 'ingest-preview' ? 'Previewing...' : 'Preview external feeds'}
+              </button>
+              <button
+                onClick={() => void runExternalSignalIngest(false)}
+                disabled={busyAction === 'ingest-run'}
+                className="rounded-xl bg-[#da1a32] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#b01528] disabled:opacity-50"
+              >
+                {busyAction === 'ingest-run' ? 'Running ingest...' : 'Run external ingest'}
+              </button>
+            </div>
           </div>
         </section>
       </div>
@@ -443,6 +493,16 @@ export default function AdminDisasterConsolePage() {
                 </div>
                 <p className="mt-2 text-sm font-medium text-[#000000]">{signal.source_name}</p>
                 <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-gray-600">{signal.normalized_text}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {signal.detected_keywords.map((keyword) => (
+                    <span key={`${signal.id}-${keyword}`} className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] text-[#da1a32]">
+                      {keyword}
+                    </span>
+                  ))}
+                  {!signal.detected_keywords.length && (
+                    <span className="rounded-full bg-[#edf2f4] px-2 py-0.5 text-[11px] text-gray-500">No keywords</span>
+                  )}
+                </div>
                 <p className="mt-2 text-[11px] text-gray-500">
                   {signal.detected_locations.join(', ') || 'No locations'} - {signal.review_status}
                 </p>
@@ -494,6 +554,13 @@ export default function AdminDisasterConsolePage() {
           </div>
         </section>
       </div>
+
+      <section className="mt-6 rounded-2xl border-2 border-[#e5e5e5] bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-bold text-[#000000]">Last Detection Action</h2>
+        <pre className="max-h-80 overflow-auto rounded-lg bg-[#000000] p-4 text-xs text-green-200">
+          {jobResult ?? 'Run a detection sweep or external ingest to inspect the structured response here.'}
+        </pre>
+      </section>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { activateDisasterEvent, requireAdmin } from '@/lib/disaster/server';
+import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 import { getSupabaseServerClient } from '@/lib/supabase/server';
 
 type Params = { params: Promise<{ id: string }> };
@@ -7,8 +8,9 @@ type Params = { params: Promise<{ id: string }> };
 export async function POST(_: Request, { params }: Params) {
   try {
     const { id } = await params;
-    const supabase = await getSupabaseServerClient();
-    const profile = await requireAdmin(supabase);
+    const authClient = await getSupabaseServerClient();
+    const profile = await requireAdmin(authClient);
+    const supabase = getSupabaseAdminClient();
     const event = await activateDisasterEvent(supabase, id, profile.id, 'manual');
     return NextResponse.json({ event });
   } catch (error) {

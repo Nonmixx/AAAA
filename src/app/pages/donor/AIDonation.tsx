@@ -331,6 +331,10 @@ export function AIDonation() {
   const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
   const [glmPlan, setGlmPlan] = useState<DonationPlanPayload | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
+  const [donationQuantity, setDonationQuantity] = useState('10');
+  const [confirmingDonation, setConfirmingDonation] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirmSuccess, setConfirmSuccess] = useState<string | null>(null);
   const detectedItemRef = useRef(detectedItem);
   detectedItemRef.current = detectedItem;
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -342,6 +346,13 @@ export function AIDonation() {
   const displayReceivers = useMemo(
     () => (glmPlan?.receivers?.length ? glmPlan.receivers : FALLBACK_ALLOCATION),
     [glmPlan],
+  );
+  const liveWorkflowReady = useMemo(
+    () =>
+      displayReceivers.every((receiver) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receiver.ngoId),
+      ),
+    [displayReceivers],
   );
 
   /** Latest chat API suggestions — shown in Donation Summary before photo / plan allocation. */
@@ -605,6 +616,10 @@ export function AIDonation() {
     transcriptRef.current = '';
     setGlmPlan(null);
     setPlanLoading(false);
+    setDonationQuantity('10');
+    setConfirmingDonation(false);
+    setConfirmError(null);
+    setConfirmSuccess(null);
     setPendingImage(null);
     setPendingAttachFiles([]);
     setDetectedItem('Clothing / Mixed Items');
@@ -763,6 +778,68 @@ export function AIDonation() {
               : stage === 'result_unsuitable'
                 ? 'Not suitable'
                 : '';
+
+  const handleConfirmDonation = async () => {
+    setConfirmError(null);
+    setConfirmSuccess(null);
+
+    if (!liveWorkflowReady) {
+      setConfirmError('This recommendation is still using fallback matches. Publish live shelter needs first to complete the real cross-user workflow.');
+      return;
+    }
+
+    const parsedQuantity = Number(donationQuantity);
+    if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+      setConfirmError('Enter a donation quantity greater than 0 before confirming.');
+      return;
+    }
+
+    const condition = lastAnalysis?.condition?.toLowerCase() as 'good' | 'worn' | 'damaged' | undefined;
+    setConfirmingDonation(true);
+
+    try {
+      const response = await fetch('/api/donations/confirm-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemName: detectedItem,
+          quantity: parsedQuantity,
+          description: transcriptRef.current.trim(),
+          conditionGrade: condition ?? 'good',
+          deliveryMethod: deliveryPreference,
+          donorIntent: glmPlan?.donorIntent,
+          urgencyEvaluation: glmPlan?.urgencyEvaluation,
+          planSummary: glmPlan?.planSummary,
+          allocations: displayReceivers.map((receiver) => ({
+            needId: receiver.ngoId,
+            percent: receiver.percent,
+            reason: receiver.reason,
+          })),
+        }),
+      });
+
+      const json = (await response.json()) as {
+        error?: string;
+        allocations?: Array<{ id: string }>;
+        collectionAssignment?: { assignment_reason?: string | null };
+      };
+
+      if (!response.ok) {
+        throw new Error(json.error || 'Unable to confirm donation.');
+      }
+
+      setConfirmSuccess(
+        `Donation submitted into the live workflow. ${json.allocations?.length ?? 0} allocation(s) are now waiting in the receiver queue.${json.collectionAssignment?.assignment_reason ? ` ${json.collectionAssignment.assignment_reason}` : ''}`,
+      );
+      addBotMessage(
+        'Your donation has been submitted into the live disaster workflow. The receiver can now review it in Incoming Donations, and logistics can route it once accepted.',
+      );
+    } catch (error) {
+      setConfirmError(error instanceof Error ? error.message : 'Unable to confirm donation.');
+    } finally {
+      setConfirmingDonation(false);
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto p-6">
@@ -1440,10 +1517,54 @@ export function AIDonation() {
             </p>
           </div>
 
+          <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <Package className="w-4 h-4 text-[#da1a32]" />
+              <h3 className="text-sm font-bold text-[#000000]">Finalize this donation</h3>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block">
+                <span className="text-xs text-gray-500 uppercase tracking-wide">Quantity</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={donationQuantity}
+                  onChange={(event) => setDonationQuantity(event.target.value)}
+                  className="mt-2 w-full rounded-xl border-2 border-[#e5e5e5] px-4 py-3 text-sm"
+                />
+              </label>
+              <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/60 p-4 text-sm text-gray-700">
+                <div className="font-medium text-[#000000]">Workflow handoff</div>
+                <p className="mt-1">
+                  Confirming here creates the donation, writes live allocations, and prepares the logistics handoff for the active disaster workflow.
+                </p>
+              </div>
+            </div>
+            {!liveWorkflowReady && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                Live shelter-linked needs are required for confirmation. The current recommendation is using fallback matches, so it can explain the plan but cannot create the cross-user workflow yet.
+              </div>
+            )}
+            {confirmError && (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {confirmError}
+              </div>
+            )}
+            {confirmSuccess && (
+              <div className="mt-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                {confirmSuccess}
+              </div>
+            )}
+          </div>
+
           {/* Confirm Button */}
-          <button className="w-full bg-[#da1a32] text-white py-3.5 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium flex items-center justify-center gap-2">
+          <button
+            onClick={() => void handleConfirmDonation()}
+            disabled={confirmingDonation || !liveWorkflowReady}
+            className="w-full bg-[#da1a32] text-white py-3.5 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
             <CheckCircle2 className="w-5 h-5" />
-            Confirm Donation & Proceed
+            {confirmingDonation ? 'Submitting donation...' : 'Confirm Donation & Proceed'}
           </button>
         </div>
       )}

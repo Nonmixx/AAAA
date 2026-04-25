@@ -29,11 +29,24 @@ type WorkflowResponse = {
     transcript: string | null;
     recipient: string | null;
     created_at: string;
+    metadata?: { promotedNeedId?: string | null } | null;
+  }>;
+  needs: Array<{
+    id: string;
+    organization_id: string;
+    title: string;
+    category: string;
+    quantity_requested: number;
+    quantity_fulfilled: number;
+    urgency: 'low' | 'medium' | 'high';
+    source: string | null;
+    organizations?: { name?: string; address?: string | null } | null;
   }>;
   stats: {
     verifiedShelterContacts: number;
     inboundMessages: number;
     outboundMessages: number;
+    activeNeeds: number;
   };
   error?: string;
 };
@@ -49,6 +62,7 @@ export default function AdminSheltersPage() {
     category: 'food',
     quantityRequested: '50',
     urgency: 'high',
+    beneficiaryCount: '',
   });
 
   const loadData = async () => {
@@ -110,15 +124,54 @@ export default function AdminSheltersPage() {
         body: JSON.stringify({
           ...promoteForm,
           quantityRequested: Number(promoteForm.quantityRequested),
+          beneficiaryCount: promoteForm.beneficiaryCount ? Number(promoteForm.beneficiaryCount) : null,
         }),
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || 'Unable to promote shelter message.');
       setResult(JSON.stringify(json, null, 2));
-      setPromoteForm((current) => ({ ...current, title: '', quantityRequested: '50' }));
+      setPromoteForm((current) => ({ ...current, title: '', quantityRequested: '50', beneficiaryCount: '' }));
       await loadData();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Unable to promote shelter message.');
+    }
+  };
+
+  const autofillFromCommunication = async (communicationId: string) => {
+    setResult(null);
+    setErrorMessage(null);
+    try {
+      const response = await fetch('/api/admin/communications/extract-need', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ communicationId }),
+      });
+      const json = (await response.json()) as {
+        error?: string;
+        suggestion?: {
+          title: string;
+          category: string;
+          quantityRequested: number;
+          urgency: 'low' | 'medium' | 'high';
+          beneficiaryCount: number | null;
+          confidence: number;
+          rationale: string[];
+        };
+      };
+      if (!response.ok || !json.suggestion) throw new Error(json.error || 'Unable to extract need suggestion.');
+
+      setPromoteForm((current) => ({
+        ...current,
+        communicationId,
+        title: json.suggestion?.title ?? current.title,
+        category: json.suggestion?.category ?? current.category,
+        quantityRequested: String(json.suggestion?.quantityRequested ?? current.quantityRequested),
+        urgency: json.suggestion?.urgency ?? current.urgency,
+        beneficiaryCount: json.suggestion?.beneficiaryCount ? String(json.suggestion.beneficiaryCount) : '',
+      }));
+      setResult(JSON.stringify(json, null, 2));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to extract need suggestion.');
     }
   };
 
@@ -158,6 +211,10 @@ export default function AdminSheltersPage() {
         <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
           <div className="text-xs uppercase tracking-wide text-gray-500">Inbound Messages</div>
           <div className="mt-2 text-3xl font-bold text-[#000000]">{loading ? '-' : data?.stats.inboundMessages ?? 0}</div>
+        </div>
+        <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
+          <div className="text-xs uppercase tracking-wide text-gray-500">Published Needs</div>
+          <div className="mt-2 text-3xl font-bold text-[#000000]">{loading ? '-' : data?.stats.activeNeeds ?? 0}</div>
         </div>
       </div>
 
@@ -208,6 +265,12 @@ export default function AdminSheltersPage() {
                 <option value="low">low</option>
               </select>
             </div>
+            <input
+              value={promoteForm.beneficiaryCount}
+              onChange={(event) => setPromoteForm((current) => ({ ...current, beneficiaryCount: event.target.value }))}
+              placeholder="Estimated beneficiaries"
+              className="w-full rounded-xl border-2 border-[#e5e5e5] px-4 py-3"
+            />
             <button onClick={() => void promoteCommunication()} className="inline-flex items-center gap-2 rounded-xl bg-[#000000] px-4 py-2 text-sm font-medium text-white hover:bg-[#da1a32]">
               <Radio className="h-4 w-4" />
               Promote to active need
@@ -248,22 +311,66 @@ export default function AdminSheltersPage() {
             {inboundCommunications.map((communication) => (
               <div key={communication.id} className="rounded-xl border border-[#e5e5e5] p-4">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <span className="rounded-full bg-[#edf2f4] px-2 py-1 text-xs text-gray-600">{communication.recipient ?? 'Unknown sender'}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-[#edf2f4] px-2 py-1 text-xs text-gray-600">{communication.recipient ?? 'Unknown sender'}</span>
+                    {communication.metadata?.promotedNeedId ? (
+                      <span className="rounded-full bg-green-50 px-2 py-1 text-xs text-green-700">Promoted to need</span>
+                    ) : (
+                      <span className="rounded-full bg-amber-50 px-2 py-1 text-xs text-amber-800">Awaiting promotion</span>
+                    )}
+                  </div>
                   <span className="text-xs text-gray-500">{new Date(communication.created_at).toLocaleString('en-GB')}</span>
                 </div>
                 <p className="text-sm leading-relaxed text-gray-700">{communication.transcript ?? 'No transcript available.'}</p>
                 <button
-                  onClick={() => setPromoteForm((current) => ({ ...current, communicationId: communication.id, title: current.title || 'Shelter urgent supplies' }))}
+                  onClick={() => void autofillFromCommunication(communication.id)}
+                  disabled={Boolean(communication.metadata?.promotedNeedId)}
                   className="mt-3 inline-flex items-center gap-2 rounded-lg border border-[#da1a32] px-3 py-2 text-xs font-medium text-[#da1a32] hover:bg-[#da1a32] hover:text-white"
                 >
                   <Send className="h-3.5 w-3.5" />
-                  Use in promote form
+                  {communication.metadata?.promotedNeedId ? 'Already promoted' : 'Auto-fill promote form'}
                 </button>
               </div>
             ))}
           </div>
         </section>
       </div>
+
+      <section className="mb-6 rounded-2xl border-2 border-[#e5e5e5] bg-white p-6 shadow-sm">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-[#000000]">Published Live Needs</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              This is the Stage 2 output: structured needs published from shelter replies and now visible to the rest of the platform.
+            </p>
+          </div>
+          <Link href="/receiver/disaster-ops" className="inline-flex items-center gap-2 rounded-xl border border-[#e5e5e5] bg-white px-4 py-2 text-sm font-medium text-[#000000] hover:bg-[#edf2f4]">
+            Open receiver disaster view
+          </Link>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {(data?.needs ?? []).map((need) => (
+            <div key={need.id} className="rounded-xl border border-[#e5e5e5] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-semibold text-[#000000]">{need.title}</div>
+                  <div className="mt-1 text-sm text-gray-600">{need.organizations?.name ?? 'Shelter'} • {need.category}</div>
+                </div>
+                <span className="rounded-full bg-red-50 px-2 py-1 text-xs text-[#da1a32]">{need.urgency}</span>
+              </div>
+              <div className="mt-3 text-sm text-gray-700">{need.quantity_fulfilled} / {need.quantity_requested} fulfilled</div>
+              <div className="mt-2 text-xs text-gray-500">
+                Source: {need.source === 'communication_promoted' ? 'Shelter reply promoted' : need.source ?? 'manual'}
+              </div>
+            </div>
+          ))}
+          {!loading && !(data?.needs?.length) && (
+            <div className="rounded-xl border border-[#e5e5e5] p-4 text-sm text-gray-500">
+              No published disaster needs yet. Promote a shelter reply to create the live need record.
+            </div>
+          )}
+        </div>
+      </section>
 
       <section className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-6 shadow-sm">
         <h2 className="mb-4 text-lg font-bold text-[#000000]">Last Action Result</h2>

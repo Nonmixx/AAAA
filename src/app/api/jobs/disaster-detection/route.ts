@@ -10,6 +10,8 @@ export async function POST() {
     return NextResponse.json({
       createdEvents: result.createdEvents,
       escalatedEvents: result.escalatedEvents,
+      skippedSignals: result.skippedSignals,
+      thresholds: result.thresholds,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to run disaster detection sweep.';

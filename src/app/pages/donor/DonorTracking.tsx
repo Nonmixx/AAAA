@@ -320,21 +320,24 @@ export function DonorTracking() {
         if (userError) throw userError;
         if (!user) throw new Error('Please log in to view your donation tracking.');
 
-        const [donationsResult, allocationsResult] = await Promise.all([
-          supabase
-            .from('donations')
-            .select('id, quantity_total, created_at')
-            .eq('donor_profile_id', user.id)
-            .order('created_at', { ascending: false }),
-          supabase
-            .from('donation_allocations')
-            .select(
-              'id, status, allocated_quantity, delivery_method, estimated_delivery_date, route_summary, created_at, delivered_at, confirmed_at, donations(id, item_name, quantity_total, created_at), needs(title, organizations(name, address)), delivery_proofs(image_url, proof_timestamp, location_text, confirmed_at)'
-            )
-            .order('created_at', { ascending: false }),
-        ]);
-
+        const donationsResult = await supabase
+          .from('donations')
+          .select('id, quantity_total, created_at')
+          .eq('donor_profile_id', user.id)
+          .order('created_at', { ascending: false });
         if (donationsResult.error) throw donationsResult.error;
+
+        const donationIds = (donationsResult.data ?? []).map((donation) => donation.id);
+        const allocationsResult = donationIds.length
+          ? await supabase
+              .from('donation_allocations')
+              .select(
+                'id, donation_id, status, allocated_quantity, delivery_method, estimated_delivery_date, route_summary, created_at, delivered_at, confirmed_at, donations(id, item_name, quantity_total, created_at), needs(title, organizations(name, address)), delivery_proofs(image_url, proof_timestamp, location_text, confirmed_at)'
+              )
+              .in('donation_id', donationIds)
+              .order('created_at', { ascending: false })
+          : { data: [], error: null };
+
         if (allocationsResult.error) throw allocationsResult.error;
 
         const liveCards = ((allocationsResult.data ?? []) as AllocationRow[])

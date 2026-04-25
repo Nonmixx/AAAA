@@ -14,6 +14,11 @@ export async function ingestExternalSignals(supabase: SupabaseClient) {
   ]);
 
   const created = [];
+  const summary = {
+    news: { imported: 0, status: newsSignals.status, error: newsSignals.status === 'rejected' ? newsSignals.reason instanceof Error ? newsSignals.reason.message : String(newsSignals.reason) : null },
+    nadma: { imported: 0, status: nadmaAlerts.status, error: nadmaAlerts.status === 'rejected' ? nadmaAlerts.reason instanceof Error ? nadmaAlerts.reason.message : String(nadmaAlerts.reason) : null },
+    social: { imported: 0, status: socialSignals.status, error: socialSignals.status === 'rejected' ? socialSignals.reason instanceof Error ? socialSignals.reason.message : String(socialSignals.reason) : null },
+  };
 
   if (newsSignals.status === 'fulfilled') {
     for (const signal of newsSignals.value) {
@@ -27,6 +32,7 @@ export async function ingestExternalSignals(supabase: SupabaseClient) {
         }),
       );
     }
+    summary.news.imported = newsSignals.value.length;
   }
 
   if (nadmaAlerts.status === 'fulfilled') {
@@ -41,6 +47,7 @@ export async function ingestExternalSignals(supabase: SupabaseClient) {
         }),
       );
     }
+    summary.nadma.imported = nadmaAlerts.value.length;
   }
 
   if (socialSignals.status === 'fulfilled') {
@@ -55,9 +62,13 @@ export async function ingestExternalSignals(supabase: SupabaseClient) {
         }),
       );
     }
+    summary.social.imported = socialSignals.value.length;
   }
 
-  return created;
+  return {
+    createdSignals: created,
+    sourceSummary: summary,
+  };
 }
 
 export async function previewExternalSignals() {
@@ -75,8 +86,12 @@ export async function previewExternalSignals() {
 }
 
 export async function runDisasterDetectionJob(supabase: SupabaseClient) {
-  await ingestExternalSignals(supabase);
-  return runDetectionSweep(supabase);
+  const ingestion = await ingestExternalSignals(supabase);
+  const detection = await runDetectionSweep(supabase);
+  return {
+    ingestion,
+    detection,
+  };
 }
 
 export async function sendShelterOutreach(supabase: SupabaseClient, disasterEventId: string) {

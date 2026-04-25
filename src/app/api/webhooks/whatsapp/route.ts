@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 import { validateTwilioWebhookSignature } from '@/lib/disaster/providers/whatsapp';
 import { getSupabaseAdminClient } from '@/lib/supabase/admin';
 
+function normalizePhone(value: string) {
+  return value.replace(/^whatsapp:/i, '').replace(/[^\d+]/g, '');
+}
+
 function toParamRecord(params: URLSearchParams) {
   const record: Record<string, string | string[]> = {};
   for (const [key, value] of params.entries()) {
@@ -55,17 +59,44 @@ export async function POST(req: Request) {
 
   const from = params.get('From') ?? params.get('from') ?? 'unknown';
   const body = params.get('Body') ?? params.get('body') ?? '';
+  const normalizedFrom = normalizePhone(from);
 
   const supabase = getSupabaseAdminClient();
+  const { data: activePlatform } = await supabase
+    .from('platform_status')
+    .select('active_disaster_event_id')
+    .eq('status_key', 'primary')
+    .maybeSingle();
+
+  const { data: shelterContact } = normalizedFrom
+    ? await supabase
+        .from('shelter_contacts')
+        .select('id, organization_id, phone')
+        .or(`phone.eq.${normalizedFrom},phone.eq.whatsapp:${normalizedFrom},phone.ilike.%${normalizedFrom.replace(/^\+/, '')}`)
+        .order('is_primary', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
+
   await supabase.from('communications').insert({
+    disaster_event_id: activePlatform?.active_disaster_event_id ?? null,
+    organization_id: shelterContact?.organization_id ?? null,
     channel: 'whatsapp',
     direction: 'inbound',
     sender_role: 'external',
     recipient: from,
     transcript: body,
-    metadata,
+    metadata: {
+      ...metadata,
+      normalizedFrom,
+      shelterContactId: shelterContact?.id ?? null,
+    },
     message_status: 'received',
   } as never);
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    linkedOrganizationId: shelterContact?.organization_id ?? null,
+    activeDisasterEventId: activePlatform?.active_disaster_event_id ?? null,
+  });
 }
