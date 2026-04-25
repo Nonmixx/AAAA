@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { Bell, Settings, LayoutDashboard, Sparkles, Search, MapPin, User, Zap, X } from 'lucide-react';
 import { useDonorContext } from '../../context/DonorContext';
 import {
@@ -112,6 +113,7 @@ function mapNotificationRow(row: NotificationRow): Notification {
 }
 
 export function DonorAuthLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const { emergencyMode } = useDonorContext();
   const [notifOpen, setNotifOpen] = useState(false);
   const [expandedNotifId, setExpandedNotifId] = useState<string | null>(null);
