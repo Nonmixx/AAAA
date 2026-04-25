@@ -384,6 +384,8 @@ export function AIDonation() {
   const [activeThreadId, setActiveThreadId] = useState<string>(chatThreads[0].id);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [confirmingDonation, setConfirmingDonation] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const detectedItemRef = useRef(detectedItem);
   detectedItemRef.current = detectedItem;
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -679,7 +681,7 @@ export function AIDonation() {
 
   const handleSend = async () => {
     if (historyLoading) return;
-    if (stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
+    if (stage === 'result_suitable' || stage === 'awaiting_delivery_choice' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
     if (isTyping) return;
 
     const trimmed = inputText.trim();
@@ -948,6 +950,115 @@ export function AIDonation() {
     }
     return null;
   }, [messages]);
+
+  function parseQuantityFromTranscript(transcript: string): number {
+    const explicit = transcript.match(/\b(\d{1,4})\s*(?:pieces?|items?|packs?|kg|units?|boxes?|bags?)\b/i);
+    if (explicit?.[1]) return Math.max(1, Number(explicit[1]));
+    const fallback = transcript.match(/\b(\d{1,4})\b/);
+    if (fallback?.[1]) return Math.max(1, Number(fallback[1]));
+    return 1;
+  }
+
+  function normalizeConditionForConfirm(condition: Condition | undefined): 'good' | 'worn' | 'damaged' {
+    if (condition === 'Worn') return 'worn';
+    if (condition === 'Damaged') return 'damaged';
+    return 'good';
+  }
+
+  async function submitConfirmedDonation(choice: 'self_dropoff' | 'partner_logistics') {
+    if (confirmingDonation) return;
+    setConfirmError(null);
+    setConfirmingDonation(true);
+    try {
+      const receivers = glmPlan?.receivers ?? [];
+      if (!receivers.length) {
+        throw new Error('No AI allocation plan was found. Please re-run recommendation before confirming.');
+      }
+
+      const needsRes = await fetch('/api/donor/needs', { method: 'GET' });
+      const needsJson = (await needsRes.json()) as {
+        error?: string;
+        needs?: Array<{
+          id: string;
+          organizations?: { id?: string } | Array<{ id?: string }> | null;
+        }>;
+      };
+      if (!needsRes.ok || !Array.isArray(needsJson.needs)) {
+        throw new Error(needsJson.error || 'Unable to fetch live needs for allocation mapping.');
+      }
+
+      const activeNeeds = needsJson.needs;
+      const allocations = receivers
+        .map((receiver) => {
+          const matchedNeed = activeNeeds.find((need) => {
+            const org = need.organizations;
+            if (Array.isArray(org)) {
+              return org.some((o) => o?.id === receiver.ngoId);
+            }
+            return org?.id === receiver.ngoId;
+          });
+          if (!matchedNeed) return null;
+          return {
+            needId: matchedNeed.id,
+            percent: receiver.percent,
+            reason: receiver.reason,
+          };
+        })
+        .filter((row): row is { needId: string; percent: number; reason: string[] } => Boolean(row));
+
+      if (!allocations.length) {
+        throw new Error('AI matched organizations do not map to currently active needs. Please refresh and try again.');
+      }
+
+      const quantity = parseQuantityFromTranscript(transcriptRef.current);
+      const conditionGrade = normalizeConditionForConfirm(lastAnalysis?.condition);
+      const deliveryMethod = choice === 'self_dropoff' ? 'self_delivery' : 'platform_delivery';
+
+      const recentBotTexts = messages
+        .filter((m) => m.role === 'bot' && m.type === 'text' && m.text?.trim())
+        .slice(-4)
+        .map((m) => m.text!.trim());
+      const trackingSummary = [glmPlan?.planSummary, ...recentBotTexts]
+        .filter((s): s is string => Boolean(s && String(s).trim()))
+        .join('\n\n')
+        .trim()
+        .slice(0, 4000);
+
+      const confirmRes = await fetch('/api/donations/confirm-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemName: detectedItemRef.current,
+          quantity,
+          conditionGrade,
+          deliveryMethod,
+          allocations,
+          planSummary: glmPlan?.planSummary,
+          trackingSummary: trackingSummary || undefined,
+          donorIntent: glmPlan?.donorIntent,
+          urgencyEvaluation: glmPlan?.urgencyEvaluation,
+        }),
+      });
+
+      const confirmJson = (await confirmRes.json()) as { error?: string };
+      if (!confirmRes.ok) {
+        throw new Error(confirmJson.error || 'Unable to submit donation for dispatch.');
+      }
+
+      addBotMessage(
+        choice === 'self_dropoff'
+          ? 'Donation submitted successfully. We have created your allocation and drop-off workflow. Redirecting you to tracking...'
+          : 'Donation submitted successfully. We have created your allocation and pickup workflow. Redirecting you to tracking...',
+      );
+      window.setTimeout(() => {
+        window.location.href = '/donor/tracking';
+      }, 900);
+    } catch (e) {
+      setConfirmError(e instanceof Error ? e.message : 'Unable to submit donation.');
+    } finally {
+      setConfirmingDonation(false);
+    }
+  }
 
   const needsPhotoResend =
     stage === 'awaiting_image' &&
@@ -1294,15 +1405,28 @@ export function AIDonation() {
                 isRecording
                   ? 'Listening...'
                   : stage === 'result_suitable' || stage === 'result_unsuitable'
-                        ? 'Start a new chat to donate again'
-                        : 'Type your message…'
+                    ? 'Start a new chat to donate again'
+                    : stage === 'awaiting_delivery_choice'
+                      ? 'Choose a delivery option below to save & show on Tracking'
+                      : 'Type your message…'
               }
-              disabled={stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording}
+              disabled={
+                stage === 'result_suitable' ||
+                stage === 'awaiting_delivery_choice' ||
+                stage === 'result_unsuitable' ||
+                stage === 'analyzing' ||
+                isRecording
+              }
               className="flex-1 px-4 py-2.5 border-2 border-[#e5e5e5] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-gray-50 disabled:cursor-not-allowed"
             />
             <button
               onClick={handleVoiceInput}
-              disabled={stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing'}
+              disabled={
+                stage === 'result_suitable' ||
+                stage === 'awaiting_delivery_choice' ||
+                stage === 'result_unsuitable' ||
+                stage === 'analyzing'
+              }
               className={`w-10 h-10 flex items-center justify-center rounded-xl border-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 ${
                 isRecording
                   ? 'border-[#da1a32] bg-[#da1a32] text-white animate-pulse'
@@ -1317,6 +1441,7 @@ export function AIDonation() {
               disabled={
                 !inputText.trim() ||
                 stage === 'result_suitable' ||
+                stage === 'awaiting_delivery_choice' ||
                 stage === 'result_unsuitable' ||
                 stage === 'analyzing' ||
                 isTyping
@@ -1504,14 +1629,21 @@ export function AIDonation() {
                 <Truck className="w-4 h-4 text-[#da1a32]" />
                 <h3 className="text-sm font-bold text-[#000000]">Choose delivery method</h3>
               </div>
+              <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-950 leading-relaxed">
+                <strong className="font-semibold">Tracking updates here:</strong> your donation is saved to the database only after you tap{' '}
+                <strong>Drop off yourself</strong> or <strong>Logistics partner pickup</strong>. Then it appears on{' '}
+                <strong>Your Impact Journey</strong> (Tracking). Chat messages alone do not create the donation record.
+              </div>
               <div className="grid sm:grid-cols-2 gap-3">
                 <button
                   type="button"
+                  disabled={confirmingDonation}
                   onClick={() => {
                     setDeliveryChoice('self_dropoff');
                     addBotMessage(
                       'You selected **Drop off yourself**. I will provide partner location and handoff steps next.',
                     );
+                    void submitConfirmedDonation('self_dropoff');
                   }}
                   className={`rounded-xl border-2 px-4 py-3 text-sm font-medium text-left transition-all ${
                     deliveryChoice === 'self_dropoff'
@@ -1523,11 +1655,13 @@ export function AIDonation() {
                 </button>
                 <button
                   type="button"
+                  disabled={confirmingDonation}
                   onClick={() => {
                     setDeliveryChoice('partner_logistics');
                     addBotMessage(
                       'You selected **Logistics partner pickup**. I will proceed with pickup scheduling details.',
                     );
+                    void submitConfirmedDonation('partner_logistics');
                   }}
                   className={`rounded-xl border-2 px-4 py-3 text-sm font-medium text-left transition-all ${
                     deliveryChoice === 'partner_logistics'
@@ -1538,6 +1672,12 @@ export function AIDonation() {
                   Logistics partner pickup
                 </button>
               </div>
+              {confirmingDonation ? (
+                <p className="mt-3 text-xs text-gray-600">Submitting donation workflow...</p>
+              ) : null}
+              {confirmError ? (
+                <p className="mt-3 text-xs text-[#da1a32]">{confirmError}</p>
+              ) : null}
             </div>
           )}
         </div>

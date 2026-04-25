@@ -1,8 +1,19 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { 
-  Package, MapPin, CheckCircle2, Truck, Clock, Heart, 
-  Users, Camera, ShieldCheck, AlertCircle, ChevronDown, ChevronUp, Search,
-  Calendar, Info, Filter
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  Package,
+  MapPin,
+  CheckCircle2,
+  Truck,
+  Clock,
+  Camera,
+  ShieldCheck,
+  AlertCircle,
+  ChevronDown,
+  ChevronUp,
+  Search,
+  Calendar,
+  Info,
+  Users,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 
@@ -11,6 +22,7 @@ type TrackStatus = 'allocated' | 'scheduled' | 'in-transit' | 'delivered' | 'pro
 
 const DB_TO_UI_STATUS: Record<string, TrackStatus> = {
   pending: 'allocated',
+  accepted: 'scheduled',
   scheduled: 'scheduled',
   in_transit: 'in-transit',
   delivered: 'delivered',
@@ -26,6 +38,14 @@ const STEPS: { key: TrackStatus; label: string; icon: React.ElementType }[] = [
   { key: 'confirmed', label: 'Confirmed', icon: ShieldCheck },
 ];
 
+/** Donor-home pickup → shelter (driven by `routing_notes.donor_logistics.milestones`, written at AI confirm). */
+const PICKUP_STEPS: { key: string; label: string; hint: string; icon: React.ElementType }[] = [
+  { key: 'coordinated', label: 'Coordinated', hint: 'Driver assigned', icon: CheckCircle2 },
+  { key: 'picked-up', label: 'Picked up', hint: 'Collected from you', icon: Package },
+  { key: 'en-route', label: 'On the way', hint: 'Heading to shelter', icon: Truck },
+  { key: 'arrived', label: 'Delivered', hint: 'Dropped at destination', icon: MapPin },
+];
+
 const stepIndex = (s: TrackStatus) => STEPS.findIndex((x) => x.key === s);
 
 const STATUS_BADGE: Record<TrackStatus, string> = {
@@ -33,8 +53,111 @@ const STATUS_BADGE: Record<TrackStatus, string> = {
   scheduled: 'bg-blue-50 text-blue-600 border-blue-100',
   'in-transit': 'bg-yellow-50 text-yellow-700 border-yellow-100',
   delivered: 'bg-indigo-50 text-indigo-700 border-indigo-100',
+  'proof-uploaded': 'bg-indigo-50 text-indigo-700 border-indigo-100',
   confirmed: 'bg-green-50 text-green-700 border-green-100',
 };
+
+type DonorLogisticsMilestones = {
+  driver_assigned_at?: string | null;
+  picked_up_from_donor_at?: string | null;
+  en_route_at?: string | null;
+  delivered_at?: string | null;
+};
+
+function pickupTimelineLastCompleted(m: DonorLogisticsMilestones | null | undefined): number {
+  if (!m?.driver_assigned_at) return -1;
+  if (!m.picked_up_from_donor_at) return 0;
+  if (!m.en_route_at) return 1;
+  if (!m.delivered_at) return 2;
+  return 3;
+}
+
+function formatTrackingRow(item: any) {
+  const deliveryMethod = item.donations?.delivery_method as string | undefined;
+  const logistics = item.routing_notes?.donor_logistics as
+    | {
+        summary?: string;
+        self_dropoff?: boolean;
+        driver?: { displayName?: string; reference?: string; phone?: string | null };
+        milestones?: DonorLogisticsMilestones;
+      }
+    | undefined;
+
+  const isPlatformPickup =
+    deliveryMethod === 'platform_delivery' && logistics && !logistics.self_dropoff;
+
+  const milestones = logistics?.milestones ?? {};
+  const matchSummary = item.donations?.ai_match_summary as Record<string, unknown> | null | undefined;
+
+  const summaryText =
+    (typeof logistics?.summary === 'string' && logistics.summary.trim()) ||
+    (typeof matchSummary?.trackingSummary === 'string' && String(matchSummary.trackingSummary).trim()) ||
+    (typeof matchSummary?.planSummary === 'string' && String(matchSummary.planSummary).trim()) ||
+    '';
+
+  const dbUi = DB_TO_UI_STATUS[item.status] || 'allocated';
+
+  let status: TrackStatus = dbUi;
+  if (isPlatformPickup) {
+    if (milestones.delivered_at || item.status === 'delivered' || item.status === 'proof_uploaded') {
+      status = 'delivered';
+    } else if (milestones.en_route_at || item.status === 'in_transit') {
+      status = 'in-transit';
+    } else if (milestones.picked_up_from_donor_at) {
+      status = 'scheduled';
+    } else if (milestones.driver_assigned_at) {
+      status = 'scheduled';
+    } else {
+      status = 'allocated';
+    }
+  }
+
+  const pickupLastIdx = isPlatformPickup ? pickupTimelineLastCompleted(milestones) : -1;
+
+  const statusBadgeText =
+    isPlatformPickup && milestones.picked_up_from_donor_at && !milestones.en_route_at
+      ? 'Picked up'
+      : isPlatformPickup && milestones.en_route_at && !milestones.delivered_at
+        ? 'En route'
+        : isPlatformPickup && milestones.delivered_at
+          ? 'Delivered'
+          : isPlatformPickup && milestones.driver_assigned_at && !milestones.picked_up_from_donor_at
+            ? 'Pickup pending'
+            : status;
+
+  return {
+    id: item.id.slice(0, 8).toUpperCase(),
+    rawId: item.id,
+    item: item.donations?.item_name || 'Donation',
+    quantity: item.allocated_quantity,
+    receiver: item.needs?.organizations?.name || 'Unknown',
+    location: item.needs?.organizations?.location_name || item.needs?.organizations?.address || 'Location pending',
+    deliveryMethod: deliveryMethod?.replace(/_/g, ' ') || 'Standard',
+    deliveryMethodRaw: deliveryMethod,
+    status,
+    statusBadgeText: String(statusBadgeText),
+    urgency: item.needs?.urgency || 'medium',
+    matchReason: item.match_reason,
+    estimatedArrival: item.estimated_delivery_date,
+    deliveredAt: item.delivered_at,
+    confirmedAt: item.confirmed_at,
+    impact: `${item.impact_count || 0} ${item.impact_label || item.impact_unit || 'units'}`,
+    proof: (() => {
+      const proofRecord = Array.isArray(item.delivery_proofs) ? item.delivery_proofs[0] : item.delivery_proofs;
+      if (!proofRecord) return null;
+      return {
+        imageUrl: proofRecord.image_url,
+        location: proofRecord.location_text,
+        timestamp: proofRecord.proof_timestamp,
+      };
+    })(),
+    isPlatformPickup,
+    pickupLastIdx,
+    logisticsSummary: summaryText,
+    driver: logistics?.driver ?? null,
+    milestones,
+  };
+}
 
 export function DonorTracking() {
   const [donations, setDonations] = useState<any[]>([]);
@@ -42,6 +165,44 @@ export function DonorTracking() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all'); // Added Status Filter State
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [advancingId, setAdvancingId] = useState<string | null>(null);
+
+  const fetchTrackingData = useCallback(async (silent?: boolean) => {
+    const supabase = getSupabaseBrowserClient();
+    if (!silent) setLoading(true);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      setDonations([]);
+      if (!silent) setLoading(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('donation_allocations')
+      .select(`
+          id, status, allocated_quantity, route_summary, routing_notes,
+          impact_count, impact_unit, impact_label, created_at,
+          match_reason, estimated_delivery_date, delivered_at, confirmed_at,
+          donations!inner (item_name, delivery_method, donor_profile_id, ai_match_summary),
+          needs (urgency, organizations (name, location_name, address)),
+          delivery_proofs (image_url, proof_timestamp, location_text)
+        `)
+      .eq('donations.donor_profile_id', user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error:', error);
+      setDonations([]);
+    } else if (data) {
+      const formatted = data.map((item: any) => formatTrackingRow(item));
+      setDonations(formatted);
+    }
+    if (!silent) setLoading(false);
+  }, []);
 
   const handleConfirmReceipt = async (rawId: string) => {
     const supabase = getSupabaseBrowserClient();
@@ -66,76 +227,39 @@ export function DonorTracking() {
     );
   };
 
+  const advancePickupDemo = async (rawId: string) => {
+    setAdvancingId(rawId);
+    try {
+      const res = await fetch(`/api/donor/allocations/${rawId}/pickup-milestone`, { method: 'POST' });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(json.error || 'Unable to update pickup status.');
+      await fetchTrackingData(true);
+    } catch (e) {
+      console.error(e);
+      alert(e instanceof Error ? e.message : 'Update failed.');
+    } finally {
+      setAdvancingId(null);
+    }
+  };
+
   useEffect(() => {
-    const fetchTrackingData = async () => {
-      const supabase = getSupabaseBrowserClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        setLoading(false);
-        return;
-      }
-
-      // Query includes organizations for search capability
-      const { data, error } = await supabase
-        .from('donation_allocations')
-        .select(`
-          id, status, allocated_quantity, route_summary,
-          impact_count, impact_unit, impact_label, created_at,
-          match_reason, estimated_delivery_date, delivered_at, confirmed_at,
-          donations!inner (item_name, delivery_method, donor_profile_id),
-          needs (urgency, organizations (name, location_name, address)),
-          delivery_proofs (image_url, proof_timestamp, location_text)
-        `)
-        .eq('donations.donor_profile_id', user.id)
-        .order('created_at', { ascending: false });
-
-      if (error) console.error('Error:', error);
-
-      if (data) {
-        const formatted = data.map((item: any) => ({
-          id: item.id.slice(0, 8).toUpperCase(),
-          rawId: item.id,
-          item: item.donations?.item_name || 'Donation',
-          quantity: item.allocated_quantity,
-          receiver: item.needs?.organizations?.name || 'Unknown',
-          location: item.needs?.organizations?.location_name || item.needs?.organizations?.address || 'Location pending',
-          deliveryMethod: item.donations?.delivery_method?.replace('_', ' ') || 'Standard',
-          status: DB_TO_UI_STATUS[item.status] || 'allocated',
-          urgency: item.needs?.urgency || 'medium',
-          matchReason: item.match_reason,
-          estimatedArrival: item.estimated_delivery_date,
-          deliveredAt: item.delivered_at,
-          confirmedAt: item.confirmed_at,
-          impact: `${item.impact_count || 0} ${item.impact_label || item.impact_unit || 'units'}`,
-          proof: (() => {
-            const proofRecord = Array.isArray(item.delivery_proofs) ? item.delivery_proofs[0] : item.delivery_proofs;
-            if (!proofRecord) return null;
-            return {
-              imageUrl: proofRecord.image_url,
-              location: proofRecord.location_text,
-              timestamp: proofRecord.proof_timestamp,
-            };
-          })(),
-        }));
-        setDonations(formatted);
-      }
-      setLoading(false);
-    };
-
-    fetchTrackingData();
-  }, []);
+    void fetchTrackingData(false);
+    const id = window.setInterval(() => void fetchTrackingData(true), 15000);
+    return () => window.clearInterval(id);
+  }, [fetchTrackingData]);
 
   // Search by Item, ID, or Receiver (Org Name)
   const filteredData = useMemo(() => {
-    return donations.filter(d => {
-      const matchesSearch = 
-        d.item.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    return donations.filter((d) => {
+      const q = searchQuery.toLowerCase();
+      const matchesSearch =
+        d.item.toLowerCase().includes(q) ||
         d.id.includes(searchQuery.toUpperCase()) ||
-        d.receiver.toLowerCase().includes(searchQuery.toLowerCase()); // Added destination search
-      
+        d.receiver.toLowerCase().includes(q) ||
+        (typeof d.logisticsSummary === 'string' && d.logisticsSummary.toLowerCase().includes(q));
+
       const matchesStatus = statusFilter === 'all' || d.status === statusFilter;
-      
+
       return matchesSearch && matchesStatus;
     });
   }, [donations, searchQuery, statusFilter]);
@@ -183,21 +307,46 @@ export function DonorTracking() {
         {filteredData.length === 0 && (
            <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-300">
              <p className="text-slate-400">No donations match your current filters.</p>
+             <p className="mt-2 text-xs text-slate-500">
+               Finish confirmation from AI Donation by tapping <strong>Drop off yourself</strong> or <strong>Logistics partner pickup</strong>.
+             </p>
            </div>
         )}
 
         {filteredData.map((donation) => {
-          const currentIdx = stepIndex(donation.status);
           const isExpanded = expandedId === donation.rawId;
+          const showPickupTimeline =
+            donation.isPlatformPickup && typeof donation.milestones?.driver_assigned_at === 'string';
 
-          const isDeliveredOrAfter = currentIdx >= stepIndex('delivered');
-          // Prioritize confirmed_at, then delivered_at, then the proof timestamp for the arrival date
-          const arrivalDate = donation.confirmedAt || donation.deliveredAt || donation.proof?.timestamp;
+          const legacyIdx = stepIndex(donation.status);
+          const pickupIdx = showPickupTimeline ? donation.pickupLastIdx : legacyIdx;
+
+          const timelineSteps = showPickupTimeline ? PICKUP_STEPS : STEPS;
+          const currentIdx = showPickupTimeline ? pickupIdx : legacyIdx;
+          const barDen = Math.max(1, timelineSteps.length - 1);
+
+          const isDeliveredOrAfter = showPickupTimeline
+            ? Boolean(donation.milestones?.delivered_at)
+            : legacyIdx >= stepIndex('delivered');
+          const arrivalDate =
+            donation.confirmedAt ||
+            donation.deliveredAt ||
+            donation.milestones?.delivered_at ||
+            donation.proof?.timestamp;
 
           const dateLabel = isDeliveredOrAfter ? 'Arrived At' : 'ETA';
           const dateValue = isDeliveredOrAfter
-            ? arrivalDate ? new Date(arrivalDate).toLocaleDateString() : 'N/A'
-            : donation.estimatedArrival ? new Date(donation.estimatedArrival).toLocaleDateString() : 'TBD';
+            ? arrivalDate
+              ? new Date(arrivalDate as string).toLocaleDateString()
+              : 'N/A'
+            : donation.estimatedArrival
+              ? new Date(donation.estimatedArrival).toLocaleDateString()
+              : 'TBD';
+
+          const pickupIncomplete =
+            showPickupTimeline &&
+            !donation.milestones?.delivered_at &&
+            process.env.NODE_ENV === 'development';
 
           return (
             <div key={donation.rawId} className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm hover:shadow-md transition-all">
@@ -227,8 +376,12 @@ export function DonorTracking() {
                     <p className="text-xs text-slate-400 uppercase font-bold tracking-wider">Destination</p>
                     <p className="text-sm font-semibold text-slate-700">{donation.receiver}</p>
                   </div>
-                  <div className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border ${STATUS_BADGE[donation.status]}`}>
-                    {donation.status}
+                  <div
+                    className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border ${
+                      STATUS_BADGE[donation.status as TrackStatus] ?? STATUS_BADGE.allocated
+                    }`}
+                  >
+                    {donation.statusBadgeText}
                   </div>
                   {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
                 </div>
@@ -238,28 +391,99 @@ export function DonorTracking() {
                 <div className="px-6 pb-6 animate-in slide-in-from-top-2">
                   <hr className="mb-6 border-slate-100" />
                   
-                  {/* Progress Timeline */}
+                  {/* Progress timeline: platform pickup uses shelter-route milestones; others use allocation status. */}
                   <div className="mb-10 px-4">
                     <div className="relative flex justify-between">
                       <div className="absolute top-5 left-0 w-full h-[2px] bg-slate-100" />
-                      <div 
-                        className="absolute top-5 left-0 h-[2px] bg-[#da1a32] transition-all duration-700" 
-                        style={{ width: `${(currentIdx / (STEPS.length - 1)) * 100}%` }}
+                      <div
+                        className="absolute top-5 left-0 h-[2px] bg-[#da1a32] transition-all duration-700"
+                        style={{ width: `${(currentIdx / barDen) * 100}%` }}
                       />
-                      {STEPS.map((step, i) => (
-                        <div key={step.key} className="relative z-10 flex flex-col items-center">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center border-4 transition-all ${
-                            i <= currentIdx ? 'bg-[#da1a32] border-white shadow-md text-white' : 'bg-white border-slate-100 text-slate-300'
-                          }`}>
-                            <step.icon size={14} />
-                          </div>
-                          <span className={`mt-3 text-[9px] font-bold uppercase ${i <= currentIdx ? 'text-slate-900' : 'text-slate-300'}`}>
-                            {step.label}
-                          </span>
-                        </div>
-                      ))}
+                      {showPickupTimeline
+                        ? PICKUP_STEPS.map((step, i) => (
+                            <div key={step.key} className="relative z-10 flex flex-col items-center max-w-[22%]">
+                              <div
+                                className={`w-10 h-10 rounded-full flex items-center justify-center border-4 transition-all ${
+                                  i <= currentIdx
+                                    ? 'bg-[#da1a32] border-white shadow-md text-white'
+                                    : 'bg-white border-slate-100 text-slate-300'
+                                }`}
+                              >
+                                <step.icon size={14} />
+                              </div>
+                              <span
+                                className={`mt-3 text-[9px] font-bold uppercase text-center leading-tight ${
+                                  i <= currentIdx ? 'text-slate-900' : 'text-slate-300'
+                                }`}
+                              >
+                                {step.label}
+                              </span>
+                              <span className="mt-0.5 text-[8px] text-slate-400 text-center leading-tight hidden sm:block">
+                                {step.hint}
+                              </span>
+                            </div>
+                          ))
+                        : STEPS.map((step, i) => (
+                            <div key={step.key} className="relative z-10 flex flex-col items-center">
+                              <div
+                                className={`w-10 h-10 rounded-full flex items-center justify-center border-4 transition-all ${
+                                  i <= currentIdx
+                                    ? 'bg-[#da1a32] border-white shadow-md text-white'
+                                    : 'bg-white border-slate-100 text-slate-300'
+                                }`}
+                              >
+                                <step.icon size={14} />
+                              </div>
+                              <span
+                                className={`mt-3 text-[9px] font-bold uppercase ${i <= currentIdx ? 'text-slate-900' : 'text-slate-300'}`}
+                              >
+                                {step.label}
+                              </span>
+                            </div>
+                          ))}
                     </div>
                   </div>
+
+                  {showPickupTimeline && donation.driver && (
+                    <div className="mb-6 flex gap-3 p-4 rounded-xl border border-slate-200 bg-slate-50/80">
+                      <div className="w-11 h-11 rounded-full bg-white border border-slate-200 flex items-center justify-center text-[#da1a32] shrink-0">
+                        <Users size={20} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Pickup driver</p>
+                        <p className="text-sm font-bold text-slate-900">{donation.driver.displayName || 'Assigned driver'}</p>
+                        {donation.driver.reference && (
+                          <p className="text-xs font-mono text-slate-500 mt-0.5">Ref {donation.driver.reference}</p>
+                        )}
+                        {donation.driver.phone && (
+                          <p className="text-xs text-slate-600 mt-1">{donation.driver.phone}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {donation.logisticsSummary && (
+                    <div className="mb-6 p-4 bg-white border border-slate-200 rounded-xl">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">From your donation chat</p>
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">{donation.logisticsSummary}</p>
+                    </div>
+                  )}
+
+                  {pickupIncomplete && (
+                    <div className="mb-6 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={advancingId === donation.rawId}
+                        onClick={() => void advancePickupDemo(donation.rawId)}
+                        className="px-4 py-2 text-xs font-bold uppercase tracking-wide rounded-lg border border-dashed border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        {advancingId === donation.rawId ? 'Updating…' : 'Simulate next pickup step (dev)'}
+                      </button>
+                      <span className="text-xs text-slate-500">
+                        Advances picked up → on the way → delivered. Wire this to your driver app or ops dashboard in production.
+                      </span>
+                    </div>
+                  )}
 
                   <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                     <DetailBox label="Address" value={donation.location} icon={MapPin} />
@@ -275,7 +499,10 @@ export function DonorTracking() {
                   {donation.matchReason && (
                     <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-xl flex gap-3 items-start">
                       <Info size={18} className="text-blue-500 mt-0.5 shrink-0" />
-                      <p className="text-sm text-blue-800 italic">" {donation.matchReason} "</p>
+                      <p className="text-sm text-blue-800 italic">
+                        <span className="text-blue-400">&ldquo;</span> {donation.matchReason}{' '}
+                        <span className="text-blue-400">&rdquo;</span>
+                      </p>
                     </div>
                   )}
 

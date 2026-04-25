@@ -64,6 +64,19 @@ function withFallbackAgentsFooter(stage: string, reply: string, agents: PlanRece
   return appendMatchedAgentsHint(reply, agents);
 }
 
+function enforceConfirmationBoundary(stage: string, reply: string): string {
+  const hasFalseFinality =
+    /already in the system|details are locked in|thanks for confirming|you'?re all set|donation submitted|pickup coordination is now underway|system will coordinate/i.test(
+      reply,
+    );
+
+  if (stage !== 'awaiting_delivery_choice' && hasFalseFinality) {
+    return 'To save your donation and make it appear on Tracking, finish the in-app confirmation flow and choose a delivery option button when shown. Chat messages alone do not submit the donation.';
+  }
+
+  return reply;
+}
+
 function jsonSafeMatchedAgents(agents: PlanReceiver[]) {
   return agents.map((r) => ({
     name: r.name,
@@ -139,7 +152,7 @@ export async function POST(req: Request) {
       matchedAgents,
     );
     return NextResponse.json({
-      reply,
+      reply: enforceConfirmationBoundary(body.stage, reply),
       matchedAgents,
       workflow,
       source: 'fallback',
@@ -260,10 +273,13 @@ WORKFLOW_FLOW_ID=${workflow.flow_id}`;
     }
     if (!res) {
       return NextResponse.json({
-        reply: withFallbackAgentsFooter(
+        reply: enforceConfirmationBoundary(
           body.stage,
-          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
-          matchedAgents,
+          withFallbackAgentsFooter(
+            body.stage,
+            fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+            matchedAgents,
+          ),
         ),
         matchedAgents,
         workflow,
@@ -276,10 +292,13 @@ WORKFLOW_FLOW_ID=${workflow.flow_id}`;
       const t = await res.text().catch(() => '');
       console.error('GLM chat error', res.status, t);
       return NextResponse.json({
-        reply: withFallbackAgentsFooter(
+        reply: enforceConfirmationBoundary(
           body.stage,
-          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
-          matchedAgents,
+          withFallbackAgentsFooter(
+            body.stage,
+            fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+            matchedAgents,
+          ),
         ),
         matchedAgents,
         workflow,
@@ -297,10 +316,13 @@ WORKFLOW_FLOW_ID=${workflow.flow_id}`;
       data.content?.find((c) => c.type === 'text')?.text?.trim();
     if (!reply) {
       return NextResponse.json({
-        reply: withFallbackAgentsFooter(
+        reply: enforceConfirmationBoundary(
           body.stage,
-          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
-          matchedAgents,
+          withFallbackAgentsFooter(
+            body.stage,
+            fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+            matchedAgents,
+          ),
         ),
         matchedAgents,
         workflow,
@@ -308,14 +330,22 @@ WORKFLOW_FLOW_ID=${workflow.flow_id}`;
         sourceReason: 'empty_glm_reply',
       });
     }
-    return NextResponse.json({ reply, matchedAgents, workflow, source: 'glm' });
+    return NextResponse.json({
+      reply: enforceConfirmationBoundary(body.stage, reply),
+      matchedAgents,
+      workflow,
+      source: 'glm',
+    });
   } catch (e) {
     console.error('donation-assistant/chat', e);
     return NextResponse.json({
-      reply: withFallbackAgentsFooter(
+      reply: enforceConfirmationBoundary(
         body.stage,
-        fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
-        matchedAgents,
+        withFallbackAgentsFooter(
+          body.stage,
+          fallbackReply(body.stage, detectedItem, matchedAgents, userLatest),
+          matchedAgents,
+        ),
       ),
       matchedAgents,
       workflow,

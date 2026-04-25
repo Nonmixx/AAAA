@@ -134,6 +134,14 @@ You MUST, in order:
 - Continue one-question clarification (condition or delivery preference) and move donor toward recommendation.`;
   }
 
+  if (stage === 'awaiting_delivery_choice') {
+    return `### Response contract (stage: awaiting_delivery_choice — **critical**)
+The donor has accepted the recommended organization but **has not yet saved the donation to the database**.
+- **Never** say the donation is "already in the system", "recorded", "saved", "submitted", "confirmed in the database", or that pickup is officially scheduled, unless the product explicitly told you that step completed.
+- Tell them clearly: to **save the donation and show it on Tracking**, they must use the **two buttons on this page** — **Drop off yourself** or **Logistics partner pickup** — not chat alone.
+- Keep the reply very short (2–4 sentences). Do not invent pickup times or booking confirmations.`;
+  }
+
   return `### Response contract (stage: other)
 - Answer succinctly; keep the donor moving toward missing logistics detail and recommendation.`;
 }

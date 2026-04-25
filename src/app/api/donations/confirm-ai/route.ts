@@ -62,6 +62,7 @@ export async function POST(req: Request) {
       deliveryMethod?: 'platform_delivery' | 'self_delivery';
       allocations?: ConfirmAllocation[];
       planSummary?: string;
+      trackingSummary?: string;
       donorIntent?: string;
       urgencyEvaluation?: string;
     };
@@ -111,6 +112,11 @@ export async function POST(req: Request) {
 
     const primaryNeed = activeNeeds.find((need) => need.id === quantities[0]?.needId) ?? activeNeeds[0];
     const deliveryMethod = body.deliveryMethod ?? 'platform_delivery';
+    const trackingSummary =
+      body.trackingSummary?.trim() ||
+      body.planSummary?.trim() ||
+      null;
+    const pickupRef = `PICKUP-${crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`;
 
     const { data: donation, error: donationError } = await supabase
       .from('donations')
@@ -130,6 +136,7 @@ export async function POST(req: Request) {
           donorIntent: body.donorIntent ?? null,
           urgencyEvaluation: body.urgencyEvaluation ?? null,
           planSummary: body.planSummary ?? null,
+          trackingSummary,
           matchedNeedIds: quantities.map((row) => row.needId),
         },
       })
@@ -138,6 +145,7 @@ export async function POST(req: Request) {
 
     if (donationError) throw donationError;
 
+    const nowIso = new Date().toISOString();
     const allocationRows = quantities.map((row) => ({
       donation_id: donation.id,
       need_id: row.needId,
@@ -146,6 +154,31 @@ export async function POST(req: Request) {
       delivery_method: deliveryMethod,
       match_score: row.percent,
       match_reason: row.reason?.join(' ') || 'Confirmed from AI donation workflow.',
+      routing_notes:
+        deliveryMethod === 'platform_delivery'
+          ? {
+              donor_logistics: {
+                summary: trackingSummary,
+                driver: {
+                  displayName: 'Partner pickup driver',
+                  reference: pickupRef,
+                  phone: null as string | null,
+                },
+                milestones: {
+                  driver_assigned_at: nowIso,
+                  picked_up_from_donor_at: null,
+                  en_route_at: null,
+                  delivered_at: null,
+                },
+              },
+            }
+          : {
+              donor_logistics: {
+                summary: trackingSummary,
+                self_dropoff: true,
+                milestones: {},
+              },
+            },
     }));
 
     const { data: allocations, error: allocationsError } = await supabase
@@ -169,21 +202,22 @@ export async function POST(req: Request) {
     const assignmentReason =
       deliveryMethod === 'self_delivery'
         ? `Assigned to active collection point${candidateCollectionPoint?.name ? ` ${candidateCollectionPoint.name}` : ''} for donor drop-off.`
-        : `Marked for platform delivery${candidateCollectionPoint?.name ? ` from staging point ${candidateCollectionPoint.name}` : ''}.`;
+        : `Donor pickup scheduled via platform logistics${candidateCollectionPoint?.name ? ` (staging ${candidateCollectionPoint.name})` : ''}.`;
 
     const { data: collectionAssignment, error: assignmentError } = await supabase
       .from('collection_assignments')
       .insert({
         donation_id: donation.id,
         disaster_event_id: disasterEventId,
-        assignment_type: deliveryMethod === 'self_delivery' ? 'dropoff' : 'direct_delivery',
+        assignment_type: deliveryMethod === 'self_delivery' ? 'dropoff' : 'pickup',
         collection_point_id: candidateCollectionPoint?.id ?? null,
-        pickup_required: false,
-        pickup_status: 'not_required',
+        pickup_required: deliveryMethod === 'platform_delivery',
+        pickup_status: deliveryMethod === 'platform_delivery' ? 'pending' : 'not_required',
         assignment_reason: assignmentReason,
         metadata: {
           createdBy: 'ai-donation-confirmation',
           allocationNeedIds: quantities.map((row) => row.needId),
+          pickupReference: deliveryMethod === 'platform_delivery' ? pickupRef : null,
         },
       })
       .select('*')
