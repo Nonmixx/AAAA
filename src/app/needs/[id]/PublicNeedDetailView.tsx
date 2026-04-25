@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart } from 'lucide-react';
+import { useState } from 'react';
+import { Building2, MapPin, Phone, Mail, Package, AlertCircle, Heart, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { PublicNeedRow, PublicOrganizationDetail } from '@/lib/publicNeeds';
+import { DEFAULT_NEED_IMAGE } from '@/lib/media';
 
 function urgencyBadgeClasses(urgency: PublicNeedRow['urgency']) {
   if (urgency === 'high') {
@@ -36,7 +38,53 @@ function locationLine(org: PublicOrganizationDetail['organization']) {
   return org.location_name?.trim() || org.address?.trim() || 'Location on file';
 }
 
-export function PublicNeedDetailView({ data }: { data: PublicOrganizationDetail }) {
+function NeedImageCarousel({ imageUrls, title }: { imageUrls: string[]; title: string }) {
+  const [index, setIndex] = useState(0);
+  const total = imageUrls.length;
+  const current = imageUrls[index] || DEFAULT_NEED_IMAGE;
+
+  const prev = () => setIndex((i) => (i - 1 + total) % total);
+  const next = () => setIndex((i) => (i + 1) % total);
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-xl border border-[#e5e5e5] bg-white">
+      <div className="relative">
+        <img src={current} alt={title} className="h-52 w-full object-cover" />
+        {total > 1 ? (
+          <>
+            <button
+              type="button"
+              onClick={prev}
+              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white hover:bg-black/70"
+              aria-label="Previous image"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={next}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white hover:bg-black/70"
+              aria-label="Next image"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <div className="absolute bottom-2 right-2 rounded bg-black/55 px-2 py-0.5 text-[11px] text-white">
+              {index + 1}/{total}
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+type PublicNeedDetailViewProps = {
+  data: PublicOrganizationDetail;
+  backHref?: string;
+  donateHref?: string;
+};
+
+export function PublicNeedDetailView({ data, backHref = '/needs', donateHref = '/login' }: PublicNeedDetailViewProps) {
   const { organization: org, needs } = data;
   const mapPoint =
     org.latitude != null && org.longitude != null
@@ -50,7 +98,7 @@ export function PublicNeedDetailView({ data }: { data: PublicOrganizationDetail 
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="mb-4">
-        <Link href="/needs">
+        <Link href={backHref}>
           <button className="px-6 py-3 bg-white text-[#000000] border border-[#dbe2e8] rounded-lg hover:bg-gray-50 transition-all duration-200 font-medium shadow-sm">
             Back
           </button>
@@ -105,8 +153,14 @@ export function PublicNeedDetailView({ data }: { data: PublicOrganizationDetail 
                 const rowUrgency = need.urgency;
                 const c = urgencyBadgeClasses(rowUrgency);
                 const remaining = Math.max(0, need.quantity_requested - need.quantity_fulfilled);
+                const imageUrls = need.image_urls && need.image_urls.length > 0
+                  ? need.image_urls
+                  : need.image_url
+                    ? [need.image_url]
+                    : [DEFAULT_NEED_IMAGE];
                 return (
                   <div key={need.id} className={`p-4 border-2 rounded-xl ${c.wrap}`}>
+                    <NeedImageCarousel imageUrls={imageUrls} title={need.title} />
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-start gap-3">
                         <Package className={`w-6 h-6 mt-1 ${c.icon}`} />
@@ -156,7 +210,7 @@ export function PublicNeedDetailView({ data }: { data: PublicOrganizationDetail 
             <p className="text-white opacity-80 text-sm mb-6">
               Sign in to donate or sponsor delivery. Your support helps verified organizations meet these needs.
             </p>
-            <Link href="/login">
+            <Link href={donateHref}>
               <button className="w-full bg-white text-[#da1a32] py-3 rounded-xl hover:bg-[#edf2f4] transition-all mb-3 shadow-sm font-medium">
                 Donate Now
               </button>

@@ -1,12 +1,7 @@
-'use client';
+import { ReceiverNeedsList } from '../../../pages/donor/ReceiverNeedsList';
+import { fetchPublicBrowseReceivers } from '@/lib/publicNeeds';
 
-import dynamic from 'next/dynamic';
-
-const ReceiverNeedsList = dynamic(
-  () => import('../../../pages/donor/ReceiverNeedsList').then(mod => ({ default: mod.ReceiverNeedsList })),
-  { ssr: false }
-);
-
-export default function NeedsPage() {
-  return <ReceiverNeedsList />;
+export default async function NeedsPage() {
+  const liveReceivers = await fetchPublicBrowseReceivers();
+  return <ReceiverNeedsList liveReceivers={liveReceivers} />;
 }

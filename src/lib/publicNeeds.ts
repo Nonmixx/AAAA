@@ -1,4 +1,5 @@
 import { getSupabaseServerClientOrNull } from '@/lib/supabase/server';
+import { parseNeedImageUrls } from '@/lib/media';
 import { compareNeedPriority } from '@/lib/needPriority';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -14,14 +15,16 @@ export type PublicBrowseReceiver = {
   location: string;
   latitude: number | null;
   longitude: number | null;
+  organizationLogoUrl?: string | null;
   emergency: boolean;
   emergencyReason: string;
-  items: { item: string; quantity: number; urgency: 'high' | 'medium' | 'low'; imageUrl?: string | null }[];
+  items: { item: string; quantity: number; urgency: 'high' | 'medium' | 'low'; imageUrl?: string | null; imageUrls?: string[] }[];
 };
 
 export type PublicOrganizationRow = {
   id: string;
   name: string;
+  logo_url?: string | null;
   location_name: string | null;
   address: string | null;
   latitude: number | null;
@@ -44,7 +47,8 @@ export type PublicNeedRow = {
   urgency: 'low' | 'medium' | 'high';
   is_emergency: boolean;
   needed_by: string | null;
-  image_url: string | null;
+  image_url?: string | null;
+  image_urls?: string[];
 };
 
 export type PublicOrganizationDetail = {
@@ -61,6 +65,7 @@ export type PublicNeedWithOrganization = PublicNeedRow & {
 
 type NeedWithOrgJoin = {
   id: string;
+  created_at: string;
   title: string;
   description: string;
   category: string;
@@ -84,7 +89,7 @@ function orgLocation(org: PublicOrganizationRow): string {
 
 /**
  * Active, published needs joined to their organization for the public browse page.
- * Requires RLS that allows anon to read `organizations` for approved orgs with listings
+ * Requires RLS that allows anon to read `organizations` with active listings
  * (see `supabase/migrations/20260424120000_public_organizations_read_for_listings.sql`).
  */
 export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver[]> {
@@ -96,6 +101,7 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
     .select(
       `
       id,
+      created_at,
       title,
       description,
       category,
@@ -108,6 +114,7 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
       organizations!inner (
         id,
         name,
+        logo_url,
         location_name,
         address,
         latitude,
@@ -122,7 +129,7 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
     `
     )
     .eq('status', 'active')
-    .not('published_at', 'is', null);
+    .order('created_at', { ascending: false });
 
   if (error || !data?.length) {
     return [];
@@ -130,15 +137,15 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
 
   const rows = data as unknown as NeedWithOrgJoin[];
 
-  const approved = rows.filter((r) => {
+  const visible = rows.filter((r) => {
     const org = Array.isArray(r.organizations) ? r.organizations[0] : r.organizations;
-    return org?.verification_status === 'approved';
+    return Boolean(org?.id);
   });
-  if (!approved.length) return [];
+  if (!visible.length) return [];
 
   const byOrg = new Map<string, { org: PublicOrganizationRow; needs: PublicNeedRow[] }>();
 
-  for (const row of approved) {
+  for (const row of visible) {
     const org = (Array.isArray(row.organizations) ? row.organizations[0] : row.organizations) as
       | PublicOrganizationRow
       | undefined;
@@ -155,6 +162,7 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
       is_emergency: row.is_emergency,
       needed_by: row.needed_by,
       image_url: row.image_url,
+      image_urls: parseNeedImageUrls(row.image_url),
     };
 
     const existing = byOrg.get(org.id);
@@ -180,18 +188,24 @@ export async function fetchPublicBrowseReceivers(): Promise<PublicBrowseReceiver
       location: orgLocation(org),
       latitude: org.latitude,
       longitude: org.longitude,
+      organizationLogoUrl: org.logo_url ?? null,
       emergency,
       emergencyReason,
       items: needs.map((n) => ({
         item: n.title,
         quantity: Math.max(0, n.quantity_requested - n.quantity_fulfilled),
         urgency: mapUrgency(n.urgency),
-        imageUrl: n.image_url,
+        imageUrl: n.image_urls?.[0] ?? n.image_url,
+        imageUrls: n.image_urls ?? [],
       })),
     });
   }
 
-  return cards;
+  return cards.sort((a, b) => {
+    const emergencyRank = Number(b.emergency) - Number(a.emergency);
+    if (emergencyRank !== 0) return emergencyRank;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 type PublicNeedCandidate = PublicNeedWithOrganization | null;
@@ -254,6 +268,7 @@ export async function fetchPublicActiveNeeds(): Promise<PublicNeedWithOrganizati
         is_emergency: row.is_emergency,
         needed_by: row.needed_by,
         image_url: row.image_url,
+        image_urls: parseNeedImageUrls(row.image_url),
         organization: {
           id: organization.id,
           name: organization.name,
@@ -298,17 +313,15 @@ export async function fetchPublicOrganizationDetail(organizationId: string): Pro
       'id, name, location_name, address, description, verification_status, is_emergency, emergency_reason, contact_email, contact_phone'
     )
     .eq('id', organizationId)
-    .eq('verification_status', 'approved')
     .maybeSingle();
 
   if (orgError || !org) return null;
 
   const { data: needs, error: needsError } = await supabase
     .from('needs')
-    .select('id, title, description, category, quantity_requested, quantity_fulfilled, urgency, is_emergency, needed_by')
+    .select('id, title, description, category, quantity_requested, quantity_fulfilled, urgency, is_emergency, needed_by, image_url')
     .eq('organization_id', organizationId)
     .eq('status', 'active')
-    .not('published_at', 'is', null)
     .order('created_at', { ascending: false });
 
   if (needsError || !needs?.length) return null;
@@ -317,6 +330,7 @@ export async function fetchPublicOrganizationDetail(organizationId: string): Pro
   const needRows = (needs as PublicNeedRow[]).map((n) => ({
     ...n,
     urgency: mapUrgency(n.urgency),
+    image_urls: parseNeedImageUrls(n.image_url),
   }));
 
   return { organization: orgRow, needs: needRows };

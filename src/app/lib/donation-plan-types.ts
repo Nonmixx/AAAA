@@ -1,5 +1,5 @@
 export type PlanUrgency = 'High' | 'Medium' | 'Low';
-export type ItemCondition = 'Good' | 'Worn' | 'Damaged';
+export type ItemCondition = 'Good' | 'Worn' | 'Damaged' | 'Unknown';
 export type DeliveryPreference = 'platform_delivery' | 'self_delivery';
 
 export type ReceiverMatchContext = 'monetary' | 'in_kind';

@@ -1,19 +1,23 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import {
-  Sparkles, Send, ImagePlus, Bot, User, CheckCircle2,
+  Sparkles, Send, Bot, User, CheckCircle2,
   XCircle, Package, MapPin, Building2, Brain, RotateCcw, AlertCircle,
-  Mic, Paperclip, MicOff, Loader2, Scale, Truck,
+  Mic, MicOff, Loader2, Scale, Truck, Zap,
 } from 'lucide-react';
-import type { DeliveryPreference, DonationPlanPayload, PlanReceiver } from '../../lib/donation-plan-types';
+import type { DonationPlanPayload, PlanReceiver } from '../../lib/donation-plan-types';
+import type { DonationWorkflowSnapshot } from '../../lib/donation-workflow-types';
 import type { DonationImageAnalysisResult, PhotoVerificationStatus } from '../../lib/donation-image-analysis';
 
-type Condition = 'Good' | 'Worn' | 'Damaged';
-type Stage = 'greeting' | 'details' | 'awaiting_image' | 'analyzing' | 'result_suitable' | 'result_unsuitable';
-
-function deliveryPreferenceLabel(preference: DeliveryPreference) {
-  return preference === 'self_delivery' ? 'Self delivery' : 'Platform delivery';
-}
+type Condition = 'Good' | 'Worn' | 'Damaged' | 'Unknown';
+type Stage =
+  | 'greeting'
+  | 'details'
+  | 'awaiting_image'
+  | 'analyzing'
+  | 'result_suitable'
+  | 'result_unsuitable'
+  | 'awaiting_delivery_choice';
 
 interface ChatMessage {
   id: string;
@@ -23,18 +27,80 @@ interface ChatMessage {
   type: 'text' | 'image' | 'analysis';
   condition?: Condition;
   suitable?: boolean;
-  /** Photo screening: unrelated photo vs wrong category vs OK. */
+  /** Vision screening: unrelated photo vs wrong category vs OK. */
   photoVerification?: PhotoVerificationStatus;
   /** Short model description of what appears in the image. */
   visibleSummary?: string;
+  detectedCategory?: string;
+  keyDetails?: string[];
   /** Server-ranked NGO matches for this assistant turn (chat API). */
   matchedAgents?: PlanReceiver[];
+  /** Deterministic workflow snapshot from `/api/donation-assistant/chat` (intent → structure → match). */
+  workflow?: DonationWorkflowSnapshot;
+  /** Which backend generated this turn. */
+  source?: 'glm' | 'fallback';
+  /** Optional backend explanation for fallback mode. */
+  sourceReason?: string;
+}
+
+interface ChatThread {
+  id: string;
+  title: string;
+  updatedAt: number;
+  stage: Stage;
+  detectedItem: string;
+  messages: ChatMessage[];
+}
+
+type DbSessionRow = {
+  id: string;
+  title: string;
+  current_stage: Stage;
+  detected_item: string;
+  updated_at: string;
+};
+
+type DbMessageRow = {
+  id: string;
+  role: 'user' | 'bot';
+  type: 'text' | 'image' | 'analysis';
+  text: string | null;
+  payload: Record<string, unknown> | null;
+};
+
+function buildInitialMessages(): ChatMessage[] {
+  return [
+    {
+      id: '0',
+      role: 'bot',
+      type: 'text',
+      text: "Hi there! 👋 I’m your AI Donation Assistant for **item donations**. Tell me what item(s) you want to donate, then upload a clear photo so I can check condition and match the best NGOs.",
+    },
+  ];
+}
+
+function createFreshThread(): ChatThread {
+  return {
+    id: `chat-${Date.now()}`,
+    title: 'New Chat',
+    updatedAt: Date.now(),
+    stage: 'greeting',
+    detectedItem: 'Clothing / Mixed Items',
+    messages: buildInitialMessages(),
+  };
+}
+
+function getThreadTitle(msgs: ChatMessage[]): string {
+  const firstUser = msgs.find((m) => m.role === 'user' && m.type === 'text' && m.text?.trim());
+  if (!firstUser?.text) return 'New Chat';
+  return firstUser.text.trim().slice(0, 38);
 }
 
 const CONDITION_COLORS: Record<Condition, string> = {
   Good: 'bg-green-50 text-green-700 border-green-200',
   Worn: 'bg-yellow-50 text-yellow-700 border-yellow-200',
   Damaged: 'bg-red-50 text-[#da1a32] border-red-200',
+  Unknown: 'bg-gray-50 text-gray-600 border-gray-200',
 };
 
 const FALLBACK_ALLOCATION: PlanReceiver[] = [
@@ -99,7 +165,7 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-/** Downscale large photos before upload screening (browser-only). */
+/** Downscale large photos before vision API (browser-only). */
 async function prepareImageForAnalysis(file: File): Promise<{ base64: string; mimeType: string }> {
   if (!file.type.startsWith('image/')) {
     throw new Error('Only image files can be analyzed for donation items.');
@@ -161,36 +227,7 @@ function UserBubble({ children }: { children: React.ReactNode }) {
 }
 
 function matchedAgentHref(ngoId: string) {
-  const trimmed = ngoId.trim();
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
-  return isUuid ? `/donor/needs/${encodeURIComponent(trimmed)}` : '/donor/needs';
-}
-
-/** Sidebar row: compact match card → receiver detail. */
-function MatchedAgentSidebarRow({ r, mutedBg }: { r: PlanReceiver; mutedBg?: boolean }) {
-  return (
-    <li
-      className={`rounded-lg border border-[#e5e5e5] shadow-sm overflow-hidden ${
-        mutedBg ? 'bg-[#edf2f4]/40' : 'bg-white'
-      }`}
-    >
-      <Link
-        href={matchedAgentHref(r.ngoId)}
-        className={`flex items-center justify-between gap-2 px-3 py-2 transition-all hover:ring-1 hover:ring-[#da1a32]/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#da1a32] ${
-          mutedBg ? 'hover:bg-white' : 'hover:bg-[#fef2f2]'
-        }`}
-      >
-        <div className="min-w-0">
-          <p className="text-xs font-semibold text-[#000000] truncate">{r.name}</p>
-          <p className="text-[10px] text-gray-500 truncate flex items-center gap-0.5">
-            <MapPin className="w-3 h-3 flex-shrink-0" />
-            {r.location}
-          </p>
-        </div>
-        <span className="text-sm font-bold text-[#da1a32] flex-shrink-0">{r.percent}%</span>
-      </Link>
-    </li>
-  );
+  return `/donor/needs/${encodeURIComponent(ngoId)}`;
 }
 
 /** Chat: expanded match card → receiver detail. */
@@ -270,6 +307,24 @@ function VisualReasoningPanel({ r }: { r: PlanReceiver }) {
   );
 }
 
+function categoryEmoji(slug: string): string {
+  if (slug === 'clothes') return '👕';
+  if (slug === 'food_packs') return '🍚';
+  if (slug === 'school_supplies') return '📚';
+  if (slug === 'blankets_bedding') return '🛏️';
+  if (slug === 'medical_supplies') return '⚕️';
+  return '📦';
+}
+
+function humanizeSourceReason(reason: string): string {
+  if (reason === 'missing_api_key') return 'missing API key in server env';
+  if (reason.startsWith('glm_http_401')) return 'GLM auth failed (check API key/base)';
+  if (reason.startsWith('glm_http_404')) return 'GLM endpoint not found (check API base)';
+  if (reason === 'network_or_runtime_error') return 'network/runtime error';
+  if (reason === 'empty_glm_reply') return 'empty model reply';
+  return reason;
+}
+
 function MatchedAgentChatCard({ r }: { r: PlanReceiver }) {
   return (
     <li className="rounded-lg border border-[#e5e5e5] overflow-hidden">
@@ -312,56 +367,40 @@ function MatchedAgentChatCard({ r }: { r: PlanReceiver }) {
 
 export function AIDonation() {
   const [stage, setStage] = useState<Stage>('greeting');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '0',
-      role: 'bot',
-      type: 'text',
-      text: "Hi there! 👋 I’m your AI Donation Assistant for **item donations**. Tell me what item(s) you want to donate, then upload a clear photo so I can check condition and match the best NGOs.",
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(buildInitialMessages());
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [detectedItem, setDetectedItem] = useState('Clothing / Mixed Items');
-  const [deliveryPreference, setDeliveryPreference] = useState<DeliveryPreference>('platform_delivery');
   const [isRecording, setIsRecording] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [pendingImage, setPendingImage] = useState<{ file: File; preview: string } | null>(null);
   const [pendingAttachFiles, setPendingAttachFiles] = useState<File[]>([]);
   const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
   const [glmPlan, setGlmPlan] = useState<DonationPlanPayload | null>(null);
+  const [donationAccepted, setDonationAccepted] = useState(false);
+  const [deliveryChoice, setDeliveryChoice] = useState<'self_dropoff' | 'partner_logistics' | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
-  const [donationQuantity, setDonationQuantity] = useState('10');
-  const [confirmingDonation, setConfirmingDonation] = useState(false);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
-  const [confirmSuccess, setConfirmSuccess] = useState<string | null>(null);
+  const [chatThreads, setChatThreads] = useState<ChatThread[]>([createFreshThread()]);
+  const [activeThreadId, setActiveThreadId] = useState<string>(chatThreads[0].id);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const detectedItemRef = useRef(detectedItem);
   detectedItemRef.current = detectedItem;
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const attachInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef('');
+  const donationFlowIdRef = useRef<string | null>(null);
 
   const displayReceivers = useMemo(
-    () => (glmPlan?.receivers?.length ? glmPlan.receivers : FALLBACK_ALLOCATION),
+    () => (glmPlan?.receivers?.length ? glmPlan.receivers.slice(0, 1) : FALLBACK_ALLOCATION.slice(0, 1)),
     [glmPlan],
   );
-  const liveWorkflowReady = useMemo(
-    () =>
-      displayReceivers.every((receiver) =>
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receiver.ngoId),
-      ),
-    [displayReceivers],
-  );
 
-  /** Latest chat API suggestions — shown in Donation Summary before photo / plan allocation. */
-  const sidebarMatchedAgents = useMemo((): PlanReceiver[] | null => {
+  /** Render heavy workflow/match cards only on the latest bot text turn. */
+  const latestBotTextMessageId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i];
-      if (m.role === 'bot' && m.type === 'text' && m.matchedAgents?.length) {
-        return m.matchedAgents;
-      }
+      if (m.role === 'bot' && m.type === 'text') return m.id;
     }
     return null;
   }, [messages]);
@@ -377,18 +416,162 @@ export function AIDonation() {
     };
   }, []);
 
+  function stageFromValue(value: string | null | undefined): Stage {
+    if (
+      value === 'greeting' ||
+      value === 'details' ||
+      value === 'awaiting_image' ||
+      value === 'analyzing' ||
+      value === 'result_suitable' ||
+      value === 'result_unsuitable' ||
+      value === 'awaiting_delivery_choice'
+    ) {
+      return value;
+    }
+    return 'greeting';
+  }
+
+  function toClientThread(row: DbSessionRow): ChatThread {
+    return {
+      id: row.id,
+      title: row.title || 'New Chat',
+      updatedAt: Date.parse(row.updated_at) || Date.now(),
+      stage: stageFromValue(row.current_stage),
+      detectedItem: row.detected_item || 'Clothing / Mixed Items',
+      messages: [],
+    };
+  }
+
+  function toClientMessage(row: DbMessageRow): ChatMessage {
+    const payload = (row.payload ?? {}) as Partial<ChatMessage>;
+    return {
+      id: row.id,
+      role: row.role,
+      type: row.type,
+      text: row.text ?? undefined,
+      imageUrl: typeof payload.imageUrl === 'string' ? payload.imageUrl : undefined,
+      condition: payload.condition as Condition | undefined,
+      suitable: typeof payload.suitable === 'boolean' ? payload.suitable : undefined,
+      photoVerification: payload.photoVerification as PhotoVerificationStatus | undefined,
+      visibleSummary: typeof payload.visibleSummary === 'string' ? payload.visibleSummary : undefined,
+      detectedCategory: typeof payload.detectedCategory === 'string' ? payload.detectedCategory : undefined,
+      keyDetails: Array.isArray(payload.keyDetails) ? (payload.keyDetails as string[]) : undefined,
+      matchedAgents: Array.isArray(payload.matchedAgents) ? (payload.matchedAgents as PlanReceiver[]) : undefined,
+      workflow: payload.workflow as DonationWorkflowSnapshot | undefined,
+      source: payload.source as 'glm' | 'fallback' | undefined,
+      sourceReason: typeof payload.sourceReason === 'string' ? payload.sourceReason : undefined,
+    };
+  }
+
+  async function loadSessionsFromApi(): Promise<ChatThread[]> {
+    const res = await fetch('/api/donor/ai-chat-history', { cache: 'no-store' });
+    const data = (await res.json()) as { sessions?: DbSessionRow[]; error?: string };
+    if (!res.ok) throw new Error(data.error || 'Unable to load chat sessions.');
+    return (data.sessions ?? []).map(toClientThread);
+  }
+
+  async function createSessionInApi(): Promise<ChatThread> {
+    const res = await fetch('/api/donor/ai-chat-history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ withGreeting: true }),
+    });
+    const data = (await res.json()) as { session?: DbSessionRow; error?: string };
+    if (!res.ok || !data.session) throw new Error(data.error || 'Unable to create chat session.');
+    return toClientThread(data.session);
+  }
+
+  async function loadMessagesFromApi(sessionId: string): Promise<ChatMessage[]> {
+    const res = await fetch(`/api/donor/ai-chat-history/messages?sessionId=${encodeURIComponent(sessionId)}`, {
+      cache: 'no-store',
+    });
+    const data = (await res.json()) as { messages?: DbMessageRow[]; error?: string };
+    if (!res.ok) throw new Error(data.error || 'Unable to load chat messages.');
+    const mapped = (data.messages ?? []).map(toClientMessage);
+    return mapped.length > 0 ? mapped : buildInitialMessages();
+  }
+
+  async function persistMessageToApi(sessionId: string, message: ChatMessage, stageForSession: Stage, itemLabel: string) {
+    await fetch('/api/donor/ai-chat-history/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId,
+        role: message.role,
+        type: message.type,
+        text: message.text ?? null,
+        currentStage: stageForSession,
+        detectedItem: itemLabel,
+        payload: {
+          imageUrl: message.imageUrl ?? null,
+          condition: message.condition ?? null,
+          suitable: typeof message.suitable === 'boolean' ? message.suitable : null,
+          photoVerification: message.photoVerification ?? null,
+          visibleSummary: message.visibleSummary ?? null,
+          detectedCategory: message.detectedCategory ?? null,
+          keyDetails: message.keyDetails ?? null,
+          matchedAgents: message.matchedAgents ?? null,
+          workflow: message.workflow ?? null,
+          source: message.source ?? null,
+          sourceReason: message.sourceReason ?? null,
+        },
+      }),
+    });
+  }
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      setHistoryLoading(true);
+      setHistoryError(null);
+      try {
+        let sessions = await loadSessionsFromApi();
+        if (sessions.length === 0) {
+          const created = await createSessionInApi();
+          sessions = [created];
+        }
+        const active = sessions[0];
+        const msgs = await loadMessagesFromApi(active.id);
+        setChatThreads(sessions.map((t) => (t.id === active.id ? { ...t, messages: msgs } : t)));
+        setActiveThreadId(active.id);
+        setMessages(msgs);
+        setStage(active.stage);
+        setDetectedItem(active.detectedItem);
+      } catch (e) {
+        setHistoryError(e instanceof Error ? e.message : 'Unable to load chat history.');
+      } finally {
+        setHistoryLoading(false);
+      }
+    };
+    void bootstrap();
+  }, []);
+
+  useEffect(() => {
+    setChatThreads((prev) =>
+      prev.map((thread) =>
+        thread.id === activeThreadId
+          ? {
+              ...thread,
+              title: getThreadTitle(messages),
+              updatedAt: Date.now(),
+              messages,
+              stage,
+              detectedItem,
+            }
+          : thread,
+      ),
+    );
+  }, [messages, stage, detectedItem, activeThreadId]);
+
   const addBotMessage = (text: string, extra?: Partial<ChatMessage>) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now().toString(), role: 'bot', type: 'text', text, ...extra },
-    ]);
+    const message: ChatMessage = { id: Date.now().toString(), role: 'bot', type: 'text', text, ...extra };
+    setMessages((prev) => [...prev, message]);
+    void persistMessageToApi(activeThreadId, message, stage, detectedItem).catch(() => {});
   };
 
   const addUserMessage = (text: string, extra?: Partial<ChatMessage>) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now().toString(), role: 'user', type: 'text', text, ...extra },
-    ]);
+    const message: ChatMessage = { id: Date.now().toString(), role: 'user', type: 'text', text, ...extra };
+    setMessages((prev) => [...prev, message]);
+    void persistMessageToApi(activeThreadId, message, stage, detectedItem).catch(() => {});
   };
 
   const startImageConditionScan = async (file: File) => {
@@ -417,18 +600,19 @@ export function AIDonation() {
       const condition: Condition = analysis.condition;
       const okForAllocation = verification === 'passed' && condition !== 'Damaged';
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `${Date.now()}-analysis`,
-          role: 'bot',
-          type: 'analysis',
-          condition,
-          suitable: okForAllocation,
-          photoVerification: verification,
-          visibleSummary: analysis.visibleSummary,
-        },
-      ]);
+      const analysisMessage: ChatMessage = {
+        id: `${Date.now()}-analysis`,
+        role: 'bot',
+        type: 'analysis',
+        condition,
+        suitable: okForAllocation,
+        photoVerification: verification,
+        visibleSummary: analysis.visibleSummary,
+        detectedCategory: analysis.detectedCategory,
+        keyDetails: analysis.keyDetails,
+      };
+      setMessages((prev) => [...prev, analysisMessage]);
+      void persistMessageToApi(activeThreadId, analysisMessage, stage, detectedItemRef.current).catch(() => {});
 
       if (verification !== 'passed') {
         setStage('awaiting_image');
@@ -462,7 +646,6 @@ export function AIDonation() {
               transcript: transcriptRef.current.trim() || '(no text yet)',
               detectedItem: detectedItemRef.current,
               condition,
-              deliveryPreference,
             }),
           });
           const data = (await planRes.json()) as DonationPlanPayload;
@@ -479,7 +662,7 @@ export function AIDonation() {
       })();
       setTimeout(() => {
         addBotMessage(
-          `✅ Photo received: ${analysis.visibleSummary} Z.AI GLM is matching NGO demand, urgency, and split — your allocation appears below when ready.`,
+          `✅ Photo accepted: ${analysis.visibleSummary} I will recommend the best single organization for this donation.`,
         );
       }, 400);
     } catch {
@@ -495,7 +678,8 @@ export function AIDonation() {
   };
 
   const handleSend = async () => {
-    if (stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
+    if (historyLoading) return;
+    if (stage === 'result_unsuitable' || stage === 'analyzing' || isRecording) return;
     if (isTyping) return;
 
     const trimmed = inputText.trim();
@@ -548,12 +732,10 @@ export function AIDonation() {
     }
 
     let nextStage: Stage = stage;
+    // First text turn should collect missing details before photo gate.
     if (stage === 'greeting') nextStage = 'details';
-    else if (stage === 'details') {
-      nextStage = 'awaiting_image';
-    } else if (stage === 'awaiting_image') {
-      nextStage = 'awaiting_image';
-    }
+    else if (stage === 'details') nextStage = 'details';
+    else if (stage === 'awaiting_image') nextStage = 'awaiting_image';
 
     const userMsg: ChatMessage = {
       id: `${Date.now()}-u`,
@@ -563,6 +745,7 @@ export function AIDonation() {
     };
     const nextThread = [...messages, userMsg];
     setMessages(nextThread);
+    void persistMessageToApi(activeThreadId, userMsg, nextStage, nextDetected).catch(() => {});
     transcriptRef.current += `\nUser: ${userLine}`;
     setInputText('');
     setStage(nextStage);
@@ -578,19 +761,42 @@ export function AIDonation() {
           stage: nextStage,
           detectedItem: nextDetected,
           userLatest: userLine,
-          deliveryPreference,
+          donationFlowId: donationFlowIdRef.current,
         }),
       });
       const data = (await res.json()) as {
         reply?: string;
         matchedAgents?: PlanReceiver[];
+        workflow?: DonationWorkflowSnapshot;
+        source?: 'glm' | 'fallback';
+        sourceReason?: string;
       };
       const reply = data.reply?.trim() || 'Thanks — let me know how else I can help.';
       const agents =
         Array.isArray(data.matchedAgents) && data.matchedAgents.length > 0 ? data.matchedAgents : undefined;
       const extra: Partial<ChatMessage> = {};
       if (agents) extra.matchedAgents = agents;
+      if (data.workflow && typeof data.workflow.flow_id === 'string') {
+        extra.workflow = data.workflow;
+        donationFlowIdRef.current = data.workflow.flow_id;
+      }
+      if (data.source === 'glm' || data.source === 'fallback') {
+        extra.source = data.source;
+      }
+      if (typeof data.sourceReason === 'string' && data.sourceReason.trim()) {
+        extra.sourceReason = data.sourceReason.trim();
+      }
       addBotMessage(reply, Object.keys(extra).length ? extra : undefined);
+      if (data.workflow && stage !== 'result_suitable' && stage !== 'awaiting_delivery_choice') {
+        const wf = data.workflow;
+        if (wf.intent !== 'donate_physical_item') {
+          setStage('details');
+        } else if (wf.structured_donation?.missing_fields?.length > 0) {
+          setStage('details');
+        } else {
+          setStage('awaiting_image');
+        }
+      }
     } catch {
       addBotMessage('I could not reach the assistant just now. Please try again in a moment.');
     } finally {
@@ -598,40 +804,34 @@ export function AIDonation() {
     }
   };
 
-  const handleImagePick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing') return;
+  const handleReset = async () => {
+    setHistoryError(null);
+    let newThread: ChatThread | null = null;
+    try {
+      newThread = await createSessionInApi();
+      const sessions = await loadSessionsFromApi();
+      setChatThreads(sessions);
+      setActiveThreadId(newThread.id);
+      const nextMessages = await loadMessagesFromApi(newThread.id);
+      setMessages(nextMessages);
+      setStage(newThread.stage);
+      setDetectedItem(newThread.detectedItem);
+    } catch (e) {
+      setHistoryError(e instanceof Error ? e.message : 'Unable to create a new chat.');
+      return;
+    }
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const preview = ev.target?.result as string;
-      setPendingImage({ file, preview });
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
-
-  const handleReset = () => {
     setStage('greeting');
     transcriptRef.current = '';
+    donationFlowIdRef.current = null;
     setGlmPlan(null);
+    setDonationAccepted(false);
+    setDeliveryChoice(null);
     setPlanLoading(false);
-    setDonationQuantity('10');
-    setConfirmingDonation(false);
-    setConfirmError(null);
-    setConfirmSuccess(null);
     setPendingImage(null);
     setPendingAttachFiles([]);
     setDetectedItem('Clothing / Mixed Items');
-    setDeliveryPreference('platform_delivery');
-    setMessages([
-      {
-        id: '0',
-        role: 'bot',
-        type: 'text',
-        text: "Hi there! 👋 I’m your AI Donation Assistant for **item donations**. Tell me what item(s) you want to donate, then upload a clear photo so I can check condition and match the best NGOs.",
-      },
-    ]);
+    if (newThread) setMessages(buildInitialMessages());
     setInputText('');
     setIsTyping(false);
     setAttachedFiles([]);
@@ -749,14 +949,6 @@ export function AIDonation() {
     return null;
   }, [messages]);
 
-  const handleFileAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length > 0) {
-      setPendingAttachFiles((prev) => [...prev, ...files]);
-    }
-    e.target.value = '';
-  };
-
   const needsPhotoResend =
     stage === 'awaiting_image' &&
     lastAnalysis?.photoVerification &&
@@ -779,68 +971,6 @@ export function AIDonation() {
                 ? 'Not suitable'
                 : '';
 
-  const handleConfirmDonation = async () => {
-    setConfirmError(null);
-    setConfirmSuccess(null);
-
-    if (!liveWorkflowReady) {
-      setConfirmError('This recommendation is still using fallback matches. Publish live shelter needs first to complete the real cross-user workflow.');
-      return;
-    }
-
-    const parsedQuantity = Number(donationQuantity);
-    if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
-      setConfirmError('Enter a donation quantity greater than 0 before confirming.');
-      return;
-    }
-
-    const condition = lastAnalysis?.condition?.toLowerCase() as 'good' | 'worn' | 'damaged' | undefined;
-    setConfirmingDonation(true);
-
-    try {
-      const response = await fetch('/api/donations/confirm-ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          itemName: detectedItem,
-          quantity: parsedQuantity,
-          description: transcriptRef.current.trim(),
-          conditionGrade: condition ?? 'good',
-          deliveryMethod: deliveryPreference,
-          donorIntent: glmPlan?.donorIntent,
-          urgencyEvaluation: glmPlan?.urgencyEvaluation,
-          planSummary: glmPlan?.planSummary,
-          allocations: displayReceivers.map((receiver) => ({
-            needId: receiver.ngoId,
-            percent: receiver.percent,
-            reason: receiver.reason,
-          })),
-        }),
-      });
-
-      const json = (await response.json()) as {
-        error?: string;
-        allocations?: Array<{ id: string }>;
-        collectionAssignment?: { assignment_reason?: string | null };
-      };
-
-      if (!response.ok) {
-        throw new Error(json.error || 'Unable to confirm donation.');
-      }
-
-      setConfirmSuccess(
-        `Donation submitted into the live workflow. ${json.allocations?.length ?? 0} allocation(s) are now waiting in the receiver queue.${json.collectionAssignment?.assignment_reason ? ` ${json.collectionAssignment.assignment_reason}` : ''}`,
-      );
-      addBotMessage(
-        'Your donation has been submitted into the live disaster workflow. The receiver can now review it in Incoming Donations, and logistics can route it once accepted.',
-      );
-    } catch (error) {
-      setConfirmError(error instanceof Error ? error.message : 'Unable to confirm donation.');
-    } finally {
-      setConfirmingDonation(false);
-    }
-  };
-
   return (
     <div className="max-w-7xl mx-auto p-6">
       {/* Header */}
@@ -848,16 +978,19 @@ export function AIDonation() {
         <div>
           <h1 className="text-3xl mb-1 text-[#000000] font-bold">AI Donation Assistant</h1>
           <p className="text-gray-500">
-            Chat with our AI to find the best match for your donation. Allocation planning uses{' '}
-            <span className="text-[#000000] font-medium">Z.AI GLM</span> when{' '}
-            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_KEY</code> is set; otherwise a smart
-            fallback runs. Item photos are currently handled in{' '}
-            <span className="text-[#000000] font-medium">fallback review mode</span>, so donors may be asked to describe
-            item condition in chat or resend a clearer single-item photo.
+            This is a <span className="text-[#000000] font-medium">stateful agentic workflow</span>: GLM interprets your
+            messages and (when you send a photo) runs a vision gate, then a structured allocation pass — with server-side
+            tools (NGO catalog match, JSON planners). Set{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_KEY</code> and{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">ZAI_API_BASE</code> (e.g.{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">https://api.z.ai/api/paas/v4</code> or BigModel)
+            plus <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_MODEL</code> /{' '}
+            <code className="text-xs bg-[#edf2f4] px-1.5 py-0.5 rounded">GLM_VISION_MODEL</code>. Without the key, a
+            heuristic fallback answers — coordinated multi-step reasoning is reduced.
           </p>
         </div>
         <button
-          onClick={handleReset}
+          onClick={() => void handleReset()}
           className="flex items-center gap-2 px-4 py-2 border-2 border-[#e5e5e5] rounded-xl text-sm text-[#000000] hover:border-[#da1a32] hover:text-[#da1a32] transition-all"
         >
           <RotateCcw className="w-4 h-4" />
@@ -888,7 +1021,7 @@ export function AIDonation() {
 
       {/* Single combined workspace: summary + chat */}
       <div className="rounded-2xl border-2 border-[#e5e5e5] shadow-sm overflow-hidden flex flex-col lg:flex-row lg:items-stretch lg:h-[65vh] bg-white">
-        {/* Donation Summary — left */}
+        {/* Donation Chat History — left */}
         <aside className="w-full lg:w-[min(100%,320px)] lg:flex-shrink-0 flex flex-col min-h-0 order-2 lg:order-1 border-t lg:border-t-0 lg:border-r border-[#e5e5e5] bg-[#f4f6f8]">
             <div className="px-4 py-3 border-b border-[#e5e5e5] bg-[#edf2f4]/60 flex-shrink-0">
               <div className="flex items-center gap-2">
@@ -896,195 +1029,96 @@ export function AIDonation() {
                   <Package className="w-4 h-4 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-bold text-[#000000]">Donation Summary</h2>
-                  <p className="text-xs text-gray-500">Live from your chat</p>
+                  <h2 className="text-sm font-bold text-[#000000]">Donation Chat History</h2>
+                  <p className="text-xs text-gray-500">Conversation timeline</p>
                 </div>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 max-h-[42vh] lg:max-h-none">
               <div>
+                <span className="text-xs text-gray-500 uppercase tracking-wide">Chats</span>
+                {historyLoading ? <p className="mt-1 text-[11px] text-gray-500">Loading chat history...</p> : null}
+                {historyError ? <p className="mt-1 text-[11px] text-[#da1a32]">{historyError}</p> : null}
+                <ul className="mt-2 space-y-1.5">
+                  {chatThreads
+                    .slice()
+                    .sort((a, b) => b.updatedAt - a.updatedAt)
+                    .map((thread) => (
+                      <li key={thread.id}>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setActiveThreadId(thread.id);
+                            setHistoryError(null);
+                            setHistoryLoading(true);
+                            try {
+                              const fetched = await loadMessagesFromApi(thread.id);
+                              setMessages(fetched);
+                              setChatThreads((prev) =>
+                                prev.map((t) => (t.id === thread.id ? { ...t, messages: fetched } : t)),
+                              );
+                              setStage(thread.stage);
+                              setDetectedItem(thread.detectedItem);
+                            } catch (e) {
+                              setHistoryError(e instanceof Error ? e.message : 'Unable to load this chat.');
+                            } finally {
+                              setHistoryLoading(false);
+                            }
+                            transcriptRef.current = '';
+                            donationFlowIdRef.current = null;
+                            setGlmPlan(null);
+                            setDonationAccepted(false);
+                            setDeliveryChoice(null);
+                            setPlanLoading(false);
+                            setInputText('');
+                            setIsTyping(false);
+                            setAttachedFiles([]);
+                            setPendingImage(null);
+                            setPendingAttachFiles([]);
+                            setMicPermissionError(null);
+                            setIsRecording(false);
+                            recognitionRef.current?.stop();
+                          }}
+                          className={`w-full text-left rounded-lg border px-2.5 py-2 text-xs transition-all ${
+                            thread.id === activeThreadId
+                              ? 'bg-white border-[#da1a32] text-[#000000]'
+                              : 'bg-[#edf2f4]/50 border-[#e5e5e5] text-gray-700 hover:bg-white'
+                          }`}
+                        >
+                          <p className="font-semibold truncate">{thread.title}</p>
+                        </button>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+              <div>
                 <span className="text-xs text-gray-500 uppercase tracking-wide">Progress</span>
                 <p className="text-sm font-medium text-[#000000] mt-0.5">{stageSummaryLabel}</p>
               </div>
-
-              <div>
-                <span className="text-xs text-gray-500 uppercase tracking-wide">Delivery</span>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDeliveryPreference('self_delivery')}
-                    className={`rounded-xl border px-3 py-2 text-left transition-all ${
-                      deliveryPreference === 'self_delivery'
-                        ? 'border-[#da1a32] bg-red-50 text-[#000000]'
-                        : 'border-[#e5e5e5] bg-white text-gray-600 hover:border-[#da1a32]/40'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 text-xs font-semibold">
-                      <User className="w-3.5 h-3.5" />
-                      Self delivery
-                    </div>
-                    <p className="mt-1 text-[10px] leading-snug">You handle drop-off or handoff yourself.</p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeliveryPreference('platform_delivery')}
-                    className={`rounded-xl border px-3 py-2 text-left transition-all ${
-                      deliveryPreference === 'platform_delivery'
-                        ? 'border-[#da1a32] bg-red-50 text-[#000000]'
-                        : 'border-[#e5e5e5] bg-white text-gray-600 hover:border-[#da1a32]/40'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 text-xs font-semibold">
-                      <Truck className="w-3.5 h-3.5" />
-                      Platform delivery
-                    </div>
-                    <p className="mt-1 text-[10px] leading-snug">Platform coordinates the delivery route.</p>
-                  </button>
+              {messages.length <= 1 ? (
+                <div className="rounded-xl border border-dashed border-[#e5e5e5] bg-[#edf2f4]/30 p-4 text-center">
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    Start chatting and your conversation history will appear here.
+                  </p>
                 </div>
-              </div>
-
-              {!lastAnalysis ? (
-                <>
-                  <div className="rounded-xl border border-dashed border-[#e5e5e5] bg-[#edf2f4]/30 p-4 text-center">
-                    <p className="text-xs text-gray-500 leading-relaxed">
-                      Tell the assistant what you are donating, then queue a <strong>photo</strong> (or attach files
-                      with your message) and press <strong>Send</strong>. Item type, condition check, and suitability
-                      will show here.
-                    </p>
-                    <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-400">
-                      <Package className="w-3.5 h-3.5" />
-                      <span className="font-medium text-gray-600">Item (preview)</span>
-                    </div>
-                    <p className="text-xs font-medium text-[#000000] mt-1">{detectedItem}</p>
-                    <p className="text-[10px] text-gray-500 mt-2">Delivery: {deliveryPreferenceLabel(deliveryPreference)}</p>
-                  </div>
-                  {sidebarMatchedAgents && sidebarMatchedAgents.length > 0 ? (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
-                        <span className="text-xs font-bold text-[#000000] uppercase tracking-wide">
-                          Matched donation agents
-                        </span>
-                      </div>
-                      <ul className="space-y-2">
-                        {sidebarMatchedAgents.map((r) => (
-                          <MatchedAgentSidebarRow key={r.ngoId} r={r} />
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                </>
               ) : (
-                <>
-                  <div className="rounded-xl border border-[#e5e5e5] bg-white p-3 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-gray-500">Item</span>
-                      <span className="text-xs font-medium text-[#000000] text-right flex items-center gap-1">
-                        <Package className="w-3 h-3 flex-shrink-0" />
-                        {detectedItem}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-gray-500">Condition</span>
-                      {lastAnalysis.photoVerification && lastAnalysis.photoVerification !== 'passed' ? (
-                        <span className="text-xs font-medium text-amber-800 px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50">
-                          —
-                        </span>
-                      ) : (
-                        <span
-                          className={`text-xs font-medium px-2 py-0.5 rounded-full border ${CONDITION_COLORS[lastAnalysis.condition!]}`}
-                        >
-                          {lastAnalysis.condition}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-gray-500">Suitability</span>
-                      {lastAnalysis.photoVerification && lastAnalysis.photoVerification !== 'passed' ? (
-                        <span className="text-xs font-medium text-amber-800 flex items-center gap-1">
-                          <AlertCircle className="w-3.5 h-3.5" /> Resend photo
-                        </span>
-                      ) : lastAnalysis.suitable ? (
-                        <span className="text-xs font-medium text-green-700 flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Suitable
-                        </span>
-                      ) : (
-                        <span className="text-xs font-medium text-[#da1a32] flex items-center gap-1">
-                          <XCircle className="w-3.5 h-3.5" /> Not suitable
-                        </span>
-                      )}
-                    </div>
-                    {lastAnalysis.visibleSummary ? (
-                      <p className="text-[10px] text-gray-500 pt-1 border-t border-[#e5e5e5] leading-snug">
-                        AI saw: {lastAnalysis.visibleSummary}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {stage === 'result_suitable' ? (
-                    <div>
-                      <span className="text-xs text-gray-500 uppercase tracking-wide">Suggested receivers</span>
-                      <ul className="mt-2 space-y-2">
-                        {displayReceivers.map((r) => (
-                          <li
-                            key={r.ngoId}
-                            className="flex items-center justify-between gap-2 rounded-lg border border-[#e5e5e5] bg-[#edf2f4]/40 px-3 py-2"
-                          >
-                            <div className="min-w-0">
-                              <p className="text-xs font-semibold text-[#000000] truncate">{r.name}</p>
-                              <p className="text-[10px] text-gray-500 truncate flex items-center gap-0.5">
-                                <MapPin className="w-3 h-3 flex-shrink-0" />
-                                {r.location}
-                              </p>
-                            </div>
-                            <span className="text-sm font-bold text-[#da1a32] flex-shrink-0">{r.allocation}%</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : sidebarMatchedAgents && sidebarMatchedAgents.length > 0 ? (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2 mt-1">
-                        <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
-                        <span className="text-xs font-bold text-[#000000] uppercase tracking-wide">
-                          Matched donation agents
-                        </span>
-                      </div>
-                      <ul className="space-y-2">
-                        {sidebarMatchedAgents.map((r) => (
-                          <MatchedAgentSidebarRow key={r.ngoId} r={r} mutedBg />
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                </>
-              )}
-
-              {(pendingImage || pendingAttachFiles.length > 0) && (
-                <div>
-                  <span className="text-xs text-gray-500 uppercase tracking-wide">Queued (not sent)</span>
-                  <ul className="mt-1.5 space-y-1 text-xs text-amber-800">
-                    {pendingImage && <li>🖼 Photo — press Send in chat to analyze</li>}
-                    {pendingAttachFiles.map((f, i) => (
-                      <li key={`q-${f.name}-${i}`} className="truncate" title={f.name}>
-                        📎 {f.name}
+                <ul className="space-y-2">
+                  {messages
+                    .filter((m) => m.type === 'text' && m.text?.trim())
+                    .map((m) => (
+                      <li
+                        key={`history-${m.id}`}
+                        className={`rounded-lg border px-3 py-2 text-xs ${
+                          m.role === 'user'
+                            ? 'bg-white border-[#e5e5e5] text-[#000000]'
+                            : 'bg-[#edf2f4]/70 border-[#d9dfe4] text-gray-700'
+                        }`}
+                      >
+                        <p className="font-semibold mb-0.5">{m.role === 'user' ? 'You' : 'DonateAI'}</p>
+                        <p className="leading-relaxed whitespace-pre-line">{m.text}</p>
                       </li>
                     ))}
-                  </ul>
-                </div>
-              )}
-
-              {attachedFiles.length > 0 && (
-                <div>
-                  <span className="text-xs text-gray-500 uppercase tracking-wide">Attachments</span>
-                  <ul className="mt-1.5 space-y-1">
-                    {attachedFiles.map((f, i) => (
-                      <li key={`${f.name}-${i}`} className="text-xs text-gray-600 truncate" title={f.name}>
-                        📎 {f.name}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                </ul>
               )}
             </div>
         </aside>
@@ -1131,6 +1165,11 @@ export function AIDonation() {
               const cond = msg.condition!;
               const pv = msg.photoVerification ?? 'passed';
               const photoRejected = pv !== 'passed';
+              const suitabilityLabel = photoRejected
+                ? 'Resend photo required'
+                : msg.suitable
+                  ? 'Suitable for donation'
+                  : 'Not suitable';
               const headline = photoRejected
                 ? pv === 'wrong_item_for_category'
                   ? 'Wrong item for your category'
@@ -1153,43 +1192,41 @@ export function AIDonation() {
                         {msg.visibleSummary}
                       </p>
                     ) : null}
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-500">Declared donation</span>
-                        <span className="text-xs font-medium text-[#000000] flex items-center gap-1 text-right">
-                          <Package className="w-3 h-3 flex-shrink-0" /> {detectedItem}
-                        </span>
-                      </div>
-                      {!photoRejected ? (
-                        <>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-500">Condition</span>
-                            <span
-                              className={`text-xs font-medium px-2 py-0.5 rounded-full border ${CONDITION_COLORS[cond]}`}
-                            >
-                              {cond}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-500">Suitability</span>
-                            {msg.suitable ? (
-                              <span className="text-xs font-medium text-green-700 flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> Suitable for donation
-                              </span>
-                            ) : (
-                              <span className="text-xs font-medium text-[#da1a32] flex items-center gap-1">
-                                <XCircle className="w-3.5 h-3.5" /> Not suitable (damaged)
-                              </span>
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2 text-xs text-amber-950 leading-relaxed">
-                          This image does not pass screening. Please queue a new photo of your actual donation item and
-                          press <strong>Send</strong> again.
-                        </div>
-                      )}
+                    <div className="overflow-x-auto rounded-lg border border-[#e5e5e5] bg-white">
+                      <table className="w-full text-xs">
+                        <tbody>
+                          {[
+                            ['Declared donation', detectedItem],
+                            ['Detected category', msg.detectedCategory || '—'],
+                            ['Photo relevance', pv === 'not_a_donation_photo' ? 'Failed' : 'Passed'],
+                            ['Category match', pv === 'wrong_item_for_category' ? 'Failed' : 'Passed'],
+                            ['Condition', cond],
+                            ['Suitability', suitabilityLabel],
+                          ].map(([k, v]) => (
+                            <tr key={k} className="border-b border-[#edf2f4] last:border-b-0">
+                              <th className="w-40 bg-[#fafafa] px-2.5 py-2 text-left font-semibold text-gray-600">{k}</th>
+                              <td className="px-2.5 py-2 text-[#000000]">{v}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
+                    {msg.keyDetails?.length ? (
+                      <div className="rounded-lg border border-[#e5e5e5] bg-white/70 px-3 py-2 text-xs text-gray-700">
+                        <p className="mb-1 font-semibold text-gray-600">Detected details</p>
+                        <ul className="list-disc space-y-0.5 pl-4">
+                          {msg.keyDetails.map((d, i) => (
+                            <li key={`${msg.id}-k-${i}`}>{d}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {photoRejected ? (
+                      <div className="rounded-lg border border-amber-200 bg-white/80 px-3 py-2 text-xs text-amber-950 leading-relaxed">
+                        This image does not pass screening. Please queue a new photo of your actual donation item and
+                        press <strong>Send</strong> again.
+                      </div>
+                    ) : null}
                   </div>
                 </BotBubble>
               );
@@ -1198,10 +1235,23 @@ export function AIDonation() {
             return (
               <BotBubble key={msg.id}>
                 <div className="space-y-3">
+                  {msg.source ? (
+                    <div className="text-[10px] text-gray-500">
+                      Source:{' '}
+                      <span className="rounded-full border border-[#e5e5e5] bg-white px-2 py-0.5 font-medium text-[#000000]">
+                        {msg.source === 'glm' ? 'Z.AI GLM' : 'Fallback'}
+                      </span>
+                      {msg.source === 'fallback' && msg.sourceReason ? (
+                        <span className="ml-2 text-amber-700">
+                          ({humanizeSourceReason(msg.sourceReason)})
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <div className="bg-white border border-[#e5e5e5] text-[#000000] px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm text-sm leading-relaxed whitespace-pre-line">
                     {msg.text}
                   </div>
-                  {msg.matchedAgents && msg.matchedAgents.length > 0 ? (
+                  {msg.matchedAgents && msg.matchedAgents.length > 0 && msg.id === latestBotTextMessageId ? (
                     <div className="bg-white border border-[#e5e5e5] rounded-2xl rounded-tl-sm shadow-sm p-3 text-sm">
                       <div className="flex items-center gap-2 mb-2">
                         <Building2 className="w-4 h-4 text-[#da1a32] flex-shrink-0" />
@@ -1234,72 +1284,7 @@ export function AIDonation() {
 
         {/* Input Bar */}
         <div className="flex-shrink-0 px-4 py-3 bg-white border-t border-[#e5e5e5]">
-          {(pendingImage || pendingAttachFiles.length > 0) && (
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-              {pendingImage && (
-                <div className="inline-flex items-center gap-2 rounded-lg border border-[#da1a32] bg-red-50/40 px-2 py-1.5">
-                  <img src={pendingImage.preview} alt="" className="w-9 h-9 rounded object-cover border border-[#e5e5e5]" />
-                  <span className="text-[#000000] font-medium">Photo queued</span>
-                  <button
-                    type="button"
-                    onClick={() => setPendingImage(null)}
-                    className="text-[#da1a32] hover:underline font-medium"
-                  >
-                    Remove
-                  </button>
-                </div>
-              )}
-              {pendingAttachFiles.length > 0 && (
-                <div className="inline-flex items-center gap-2 rounded-lg border border-[#e5e5e5] bg-[#edf2f4] px-2 py-1.5">
-                  <span className="text-gray-600">{pendingAttachFiles.length} file(s) queued</span>
-                  <button
-                    type="button"
-                    onClick={() => setPendingAttachFiles([])}
-                    className="text-[#da1a32] hover:underline font-medium"
-                  >
-                    Clear
-                  </button>
-                </div>
-              )}
-              <span className="text-gray-500">Press Send to submit to the assistant.</span>
-            </div>
-          )}
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={
-                stage === 'greeting' ||
-                stage === 'result_suitable' ||
-                stage === 'result_unsuitable'
-              }
-              className="w-10 h-10 flex items-center justify-center rounded-xl border-2 border-[#e5e5e5] text-gray-400 hover:border-[#da1a32] hover:text-[#da1a32] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-              title="Choose item photo (Send to upload)"
-            >
-              <ImagePlus className="w-5 h-5" />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleImagePick}
-            />
-            <button
-              onClick={() => attachInputRef.current?.click()}
-              disabled={stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing'}
-              className="w-10 h-10 flex items-center justify-center rounded-xl border-2 border-[#e5e5e5] text-gray-400 hover:border-[#da1a32] hover:text-[#da1a32] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-              title="Attach files (Send to include in chat)"
-            >
-              <Paperclip className="w-5 h-5" />
-            </button>
-            <input
-              ref={attachInputRef}
-              type="file"
-              accept="*/*"
-              multiple
-              className="hidden"
-              onChange={handleFileAttach}
-            />
             <input
               type="text"
               value={inputText}
@@ -1308,13 +1293,9 @@ export function AIDonation() {
               placeholder={
                 isRecording
                   ? 'Listening...'
-                  : stage === 'awaiting_image'
-                      ? pendingImage
-                        ? 'Optional caption… then press Send to analyze photo'
-                        : 'Ask a question, queue files/photo, then press Send…'
-                      : stage === 'result_suitable' || stage === 'result_unsuitable'
+                  : stage === 'result_suitable' || stage === 'result_unsuitable'
                         ? 'Start a new chat to donate again'
-                        : 'Type your message… (files/photos need Send)'
+                        : 'Type your message…'
               }
               disabled={stage === 'result_suitable' || stage === 'result_unsuitable' || stage === 'analyzing' || isRecording}
               className="flex-1 px-4 py-2.5 border-2 border-[#e5e5e5] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#da1a32] focus:border-transparent disabled:bg-gray-50 disabled:cursor-not-allowed"
@@ -1334,24 +1315,18 @@ export function AIDonation() {
             <button
               onClick={() => void handleSend()}
               disabled={
-                (!pendingImage && !inputText.trim() && pendingAttachFiles.length === 0) ||
+                !inputText.trim() ||
                 stage === 'result_suitable' ||
                 stage === 'result_unsuitable' ||
                 stage === 'analyzing' ||
                 isTyping
               }
               className="w-10 h-10 bg-[#da1a32] text-white rounded-xl flex items-center justify-center hover:bg-[#b01528] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 shadow-sm"
-              title="Send message, queued files, or queued photo"
+              title="Send message"
             >
               <Send className="w-4 h-4" />
             </button>
           </div>
-          {stage === 'awaiting_image' && !micPermissionError && !isRecording && (
-            <p className="text-xs text-[#da1a32] mt-1.5 ml-12">
-              📸 For <strong>physical items</strong>: pick a photo with the image button, optionally add a caption, then
-              press <strong>Send</strong> — nothing is uploaded until you send.
-            </p>
-          )}
           {isRecording && (
             <p className="text-xs text-[#da1a32] mt-1.5 ml-12 animate-pulse">🎤 Listening... Speak now</p>
           )}
@@ -1376,12 +1351,12 @@ export function AIDonation() {
       </div>
 
       {/* Allocation Results (shown below chat when suitable) */}
-      {stage === 'result_suitable' && (
+      {(stage === 'result_suitable' || stage === 'awaiting_delivery_choice') && (
         <div className="mt-6 space-y-5">
           {planLoading && (
             <div className="flex items-center gap-2 text-sm text-gray-600 bg-[#edf2f4] border border-[#e5e5e5] rounded-xl px-4 py-3">
               <Loader2 className="w-4 h-4 animate-spin text-[#da1a32]" />
-              Z.AI GLM is extracting intent, checking NGO demand, evaluating urgency, and splitting allocation…
+              Z.AI GLM is extracting intent, checking NGO demand, and selecting the best single organization…
             </div>
           )}
 
@@ -1391,9 +1366,6 @@ export function AIDonation() {
                 <span className="font-semibold text-[#000000]">Structured plan</span>
                 <span className="rounded-full bg-[#edf2f4] px-2 py-0.5 border border-[#e5e5e5]">
                   {glmPlan.source === 'glm' ? `Z.AI · ${glmPlan.model}` : 'Fallback engine'}
-                </span>
-                <span className="rounded-full bg-[#edf2f4] px-2 py-0.5 border border-[#e5e5e5]">
-                  {deliveryPreferenceLabel(deliveryPreference)}
                 </span>
               </div>
               {glmPlan.donorIntent ? (
@@ -1424,7 +1396,7 @@ export function AIDonation() {
           <div>
             <h2 className="text-xl font-bold text-[#000000] mb-4 flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-[#da1a32]" />
-              AI-Recommended Allocation
+              AI-Recommended Organization
             </h2>
             <div className="space-y-4">
               {displayReceivers.map((r, i) => (
@@ -1451,17 +1423,10 @@ export function AIDonation() {
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <div className="text-2xl font-bold text-[#da1a32]">{r.allocation}%</div>
-                      <div className="text-xs text-gray-500">of total allocation</div>
+                      <div className="text-xs font-semibold rounded-full border border-[#e5e5e5] bg-[#edf2f4] px-2 py-1 text-[#000000]">
+                        Recommended
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="h-2 bg-[#edf2f4] rounded-full mb-4 overflow-hidden">
-                    <div
-                      className="h-full bg-[#da1a32] rounded-full transition-all"
-                      style={{ width: `${r.percent}%` }}
-                    />
                   </div>
 
                   {/* AI Explanation Panel */}
@@ -1500,9 +1465,9 @@ export function AIDonation() {
                 <p className="text-[10px] text-gray-500">Illustrative estimate</p>
               </div>
               <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
-                <p className="text-[10px] text-gray-500 uppercase tracking-wide">NGOs supported</p>
-                <p className="text-xl font-bold text-[#000000]">{new Set(displayReceivers.map((r) => r.ngoId)).size}</p>
-                <p className="text-[10px] text-gray-500">Diversified allocation</p>
+                <p className="text-[10px] text-gray-500 uppercase tracking-wide">Organization selected</p>
+                <p className="text-xl font-bold text-[#000000]">1</p>
+                <p className="text-[10px] text-gray-500">Best-fit recommendation</p>
               </div>
               <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/50 p-3">
                 <p className="text-[10px] text-gray-500 uppercase tracking-wide">Urgent cases resolved</p>
@@ -1517,55 +1482,64 @@ export function AIDonation() {
             </p>
           </div>
 
-          <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <Package className="w-4 h-4 text-[#da1a32]" />
-              <h3 className="text-sm font-bold text-[#000000]">Finalize this donation</h3>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="block">
-                <span className="text-xs text-gray-500 uppercase tracking-wide">Quantity</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={donationQuantity}
-                  onChange={(event) => setDonationQuantity(event.target.value)}
-                  className="mt-2 w-full rounded-xl border-2 border-[#e5e5e5] px-4 py-3 text-sm"
-                />
-              </label>
-              <div className="rounded-xl border border-[#e5e5e5] bg-[#edf2f4]/60 p-4 text-sm text-gray-700">
-                <div className="font-medium text-[#000000]">Workflow handoff</div>
-                <p className="mt-1">
-                  Confirming here creates the donation, writes live allocations, and prepares the logistics handoff for the active disaster workflow.
-                </p>
+          {!donationAccepted ? (
+            <button
+              type="button"
+              onClick={() => {
+                const ngo = displayReceivers[0];
+                setDonationAccepted(true);
+                setStage('awaiting_delivery_choice');
+                addBotMessage(
+                  `Great choice. I will route this donation to **${ngo?.name ?? 'the recommended organization'}**.\n\nPlease choose delivery method:\n1) Drop off yourself\n2) Our logistics partner pickup`,
+                );
+              }}
+              className="w-full bg-[#da1a32] text-white py-3.5 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium flex items-center justify-center gap-2"
+            >
+              <CheckCircle2 className="w-5 h-5" />
+              Accept Organization & Continue
+            </button>
+          ) : (
+            <div className="rounded-2xl border-2 border-[#e5e5e5] bg-white p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Truck className="w-4 h-4 text-[#da1a32]" />
+                <h3 className="text-sm font-bold text-[#000000]">Choose delivery method</h3>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeliveryChoice('self_dropoff');
+                    addBotMessage(
+                      'You selected **Drop off yourself**. I will provide partner location and handoff steps next.',
+                    );
+                  }}
+                  className={`rounded-xl border-2 px-4 py-3 text-sm font-medium text-left transition-all ${
+                    deliveryChoice === 'self_dropoff'
+                      ? 'border-[#da1a32] bg-red-50 text-[#da1a32]'
+                      : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                  }`}
+                >
+                  Drop off yourself
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeliveryChoice('partner_logistics');
+                    addBotMessage(
+                      'You selected **Logistics partner pickup**. I will proceed with pickup scheduling details.',
+                    );
+                  }}
+                  className={`rounded-xl border-2 px-4 py-3 text-sm font-medium text-left transition-all ${
+                    deliveryChoice === 'partner_logistics'
+                      ? 'border-[#da1a32] bg-red-50 text-[#da1a32]'
+                      : 'border-[#e5e5e5] hover:bg-[#edf2f4]'
+                  }`}
+                >
+                  Logistics partner pickup
+                </button>
               </div>
             </div>
-            {!liveWorkflowReady && (
-              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Live shelter-linked needs are required for confirmation. The current recommendation is using fallback matches, so it can explain the plan but cannot create the cross-user workflow yet.
-              </div>
-            )}
-            {confirmError && (
-              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {confirmError}
-              </div>
-            )}
-            {confirmSuccess && (
-              <div className="mt-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                {confirmSuccess}
-              </div>
-            )}
-          </div>
-
-          {/* Confirm Button */}
-          <button
-            onClick={() => void handleConfirmDonation()}
-            disabled={confirmingDonation || !liveWorkflowReady}
-            className="w-full bg-[#da1a32] text-white py-3.5 rounded-xl hover:bg-[#b01528] transition-all shadow-lg font-medium flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <CheckCircle2 className="w-5 h-5" />
-            {confirmingDonation ? 'Submitting donation...' : 'Confirm Donation & Proceed'}
-          </button>
+          )}
         </div>
       )}
 
@@ -1588,7 +1562,7 @@ export function AIDonation() {
                 </p>
               </div>
               <button
-                onClick={handleReset}
+                onClick={() => void handleReset()}
                 className="mt-4 flex items-center gap-2 px-5 py-2.5 bg-[#000000] text-white rounded-xl text-sm font-medium hover:bg-[#da1a32] transition-all"
               >
                 <RotateCcw className="w-4 h-4" />

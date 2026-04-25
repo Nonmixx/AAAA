@@ -1,12 +1,18 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Settings, LayoutDashboard, Sparkles, Search, MapPin, User, Zap, X, Waves } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { Bell, Settings, LayoutDashboard, Sparkles, Search, MapPin, User, Zap, X } from 'lucide-react';
 import { useDonorContext } from '../../context/DonorContext';
 import {
   PortalSidebarLayout,
   type PortalSidebarItem,
 } from './PortalSidebarLayout';
+import {
+  fetchDonorNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+} from '@/lib/supabase/notifications';
 
 interface Notification {
   id: string;
@@ -16,6 +22,15 @@ interface Notification {
   time: string;
   read: boolean;
   type: 'allocation' | 'delivery' | 'proof' | 'emergency';
+}
+
+interface NotificationRow {
+  id: string;
+  title: string;
+  body: string | null;
+  type: string;
+  is_read: boolean;
+  created_at: string;
 }
 
 const INITIAL_NOTIFS: Notification[] = [
@@ -78,18 +93,54 @@ const NOTIF_COLORS: Record<Notification['type'], string> = {
   emergency: 'bg-red-50 text-[#da1a32]',
 };
 
+function mapNotificationRow(row: NotificationRow): Notification {
+  const typeMap: Record<string, Notification['type']> = {
+    allocationCompleted: 'allocation',
+    deliveryScheduled: 'delivery',
+    itemDelivered: 'delivery',
+    emergencyAlerts: 'emergency',
+  };
+
+  return {
+    id: row.id,
+    title: row.title,
+    desc: row.body ?? '',
+    details: row.body ?? '',
+    time: new Date(row.created_at).toLocaleString(),
+    read: row.is_read,
+    type: typeMap[row.type] ?? 'allocation',
+  };
+}
+
 export function DonorAuthLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const { emergencyMode } = useDonorContext();
   const [notifOpen, setNotifOpen] = useState(false);
   const [expandedNotifId, setExpandedNotifId] = useState<string | null>(null);
   const [notifs, setNotifs] = useState<Notification[]>(INITIAL_NOTIFS);
   const notifRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    const loadNotifications = async () => {
+      try {
+        const rows = await fetchDonorNotifications(20);
+        if (rows.length > 0) {
+          setNotifs(rows.map(mapNotificationRow));
+        } else {
+          setNotifs([]);
+        }
+      } catch (error) {
+        console.error('Failed to load notifications:', error);
+      }
+    };
+
+    void loadNotifications();
+  }, []);
+
   const unreadCount = notifs.filter((n) => !n.read).length;
 
   const navigation: PortalSidebarItem[] = [
     { name: 'Dashboard', path: '/donor/dashboard', icon: LayoutDashboard },
-    { name: 'Disaster Relief', path: '/donor/disaster-relief', icon: Waves },
     { name: 'AI Donate', path: '/donor/donate', icon: Sparkles },
     { name: 'Browse Needs', path: '/donor/needs', icon: Search },
     { name: 'Track', path: '/donor/tracking', icon: MapPin },
@@ -112,8 +163,24 @@ export function DonorAuthLayout({ children }: { children: React.ReactNode }) {
     if (!notifOpen) setExpandedNotifId(null);
   }, [notifOpen]);
 
-  const markAllRead = () => setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
-  const markOneRead = (id: string) => setNotifs((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+  const markAllRead = async () => {
+    try {
+      await markAllNotificationsRead();
+      setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch (error) {
+      console.error('Failed to mark all notifications read:', error);
+    }
+  };
+
+  const markOneRead = async (id: string) => {
+    try {
+      await markNotificationRead(id);
+      setNotifs((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    } catch (error) {
+      console.error('Failed to mark notification read:', error);
+    }
+  };
+
   const dismissNotif = (id: string) => {
     setExpandedNotifId((cur) => (cur === id ? null : cur));
     setNotifs((prev) => prev.filter((n) => n.id !== id));
@@ -229,15 +296,6 @@ export function DonorAuthLayout({ children }: { children: React.ReactNode }) {
         </>
       }
     >
-      {emergencyMode && (
-        <div className="bg-[#da1a32] px-4 py-2.5 text-center text-sm font-medium text-white shadow-sm">
-          <span className="inline-flex items-center gap-2">
-            <Zap className="h-4 w-4" />
-            System is currently in Emergency Mode - urgent needs are prioritised
-            <Zap className="h-4 w-4" />
-          </span>
-        </div>
-      )}
       {children}
     </PortalSidebarLayout>
   );

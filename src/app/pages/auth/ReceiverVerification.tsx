@@ -7,7 +7,7 @@ import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { ensureProfile, ensureSessionAfterSignUp, resolveAuthenticatedRoute } from '@/lib/supabase/auth';
 import { geocodeMalaysiaAddress } from '@/lib/geocoding';
 
-export function ReceiverVerification() {
+export function ReceiverVerification({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const [existingReceiverId, setExistingReceiverId] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -30,10 +30,13 @@ export function ReceiverVerification() {
     const loadExistingReceiver = async () => {
       try {
         const supabase = getSupabaseBrowserClient();
-        const route = await resolveAuthenticatedRoute();
-        if (route === '/donor/dashboard') {
-          router.replace(route);
-          return;
+        // On `/signup` (embedded), do not send a logged-in donor away before they can use this form.
+        if (!embedded) {
+          const route = await resolveAuthenticatedRoute();
+          if (route === '/donor/dashboard') {
+            router.replace(route);
+            return;
+          }
         }
 
         const {
@@ -78,7 +81,7 @@ export function ReceiverVerification() {
     };
 
     void loadExistingReceiver();
-  }, [router]);
+  }, [router, embedded]);
 
   const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
@@ -182,6 +185,11 @@ export function ReceiverVerification() {
       }
 
       setSuccessMessage('Registration submitted. Your organization is pending verification.');
+      if (embedded) {
+        await supabase.auth.signOut();
+        router.replace('/login?registered=1&role=receiver');
+        return;
+      }
       const route = await resolveAuthenticatedRoute('receiver');
       router.push(route ?? '/receiver');
     } catch (err) {
@@ -193,32 +201,37 @@ export function ReceiverVerification() {
 
   if (checkingSession) {
     return (
-      <div className="w-full max-w-3xl rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl">
+      <div
+        className={
+          embedded
+            ? 'py-8 text-center text-sm text-gray-500'
+            : 'w-full max-w-3xl rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl'
+        }
+      >
         Preparing receiver signup...
       </div>
     );
   }
 
-  return (
-    <div className="w-full max-w-3xl">
-      <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center w-16 h-16 bg-[#da1a32] rounded-lg mb-4 shadow-lg">
-          <Heart className="w-8 h-8 text-white" fill="white" />
-        </div>
-        <h1 className="text-3xl mb-2 text-white font-bold">Organization Verification</h1>
-        <p className="text-white opacity-80">Complete your registration to start receiving donations</p>
+  const infoBanner = (
+    <div
+      className={`mb-6 flex items-center gap-3 p-4 bg-[#edf2f4] bg-opacity-20 rounded-lg border border-[#edf2f4] ${
+        embedded ? 'mt-0' : ''
+      }`}
+    >
+      <Building2 className="w-6 h-6 text-[#000000]" />
+      <div>
+        <h3 className="font-medium text-[#000000]">Receiver registration</h3>
+        <p className="text-sm text-gray-600">Provide accurate details for verification (Supabase).</p>
       </div>
+    </div>
+  );
 
-      <div className="bg-white rounded-lg shadow-xl p-8">
-        <div className="mb-6 flex items-center gap-3 p-4 bg-[#edf2f4] bg-opacity-20 rounded-lg border border-[#edf2f4]">
-          <Building2 className="w-6 h-6 text-[#000000]" />
-          <div>
-            <h3 className="font-medium text-[#000000]">Receiver Registration</h3>
-            <p className="text-sm text-gray-600">Please provide accurate information for verification</p>
-          </div>
-        </div>
+  const formBody = (
+    <>
+      {infoBanner}
 
-        <form className="space-y-6" onSubmit={handleSubmit}>
+      <form className="space-y-6" onSubmit={handleSubmit}>
           <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm mb-2 text-[#000000] font-medium">Admin Full Name</label>
@@ -237,9 +250,9 @@ export function ReceiverVerification() {
             </div>
 
             <div>
-            <label className="block text-sm mb-2 text-[#000000] font-medium">Account Email</label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <label className="block text-sm mb-2 text-[#000000] font-medium">Account Email</label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
                   name="email"
                   type="email"
@@ -390,13 +403,17 @@ export function ReceiverVerification() {
           >
             {loading ? 'Submitting...' : existingReceiverId ? 'Complete Verification' : 'Submit for Verification'}
           </button>
-        </form>
+      </form>
 
+      {!embedded ? (
         <div className="mt-6 text-center">
           <Link href="/login" className="text-sm text-gray-600 hover:text-[#000000]">
             Back to Login
           </Link>
         </div>
+      ) : null}
+
+      {!embedded ? (
         <div className="mt-3 text-center">
           <button
             type="button"
@@ -407,6 +424,33 @@ export function ReceiverVerification() {
             {loggingOut ? 'Logging out...' : 'Log out and use a different account'}
           </button>
         </div>
+      ) : null}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="w-full border-t border-[#e5e5e5] pt-6 mt-2">
+        <p className="text-sm text-gray-600 mb-4">
+          Register your organization here. After approval, sign in from the login page to open the receiver portal.
+        </p>
+        {formBody}
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-3xl">
+      <div className="text-center mb-8">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-[#da1a32] rounded-lg mb-4 shadow-lg">
+          <Heart className="w-8 h-8 text-white" fill="white" />
+        </div>
+        <h1 className="text-3xl mb-2 text-white font-bold">Organization Verification</h1>
+        <p className="text-white opacity-80">Complete your registration to start receiving donations</p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow-xl p-8">
+        {formBody}
       </div>
     </div>
   );

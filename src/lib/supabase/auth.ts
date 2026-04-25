@@ -1,7 +1,7 @@
 import { getSupabaseBrowserClient } from './client';
 import { getCurrentReceiverContext } from './receiver';
 
-type AppRole = 'donor' | 'receiver' | 'corporate' | 'admin';
+export type AppRole = 'donor' | 'receiver' | 'admin' | 'corporate_partner';
 
 export async function ensureSessionAfterSignUp(email: string, password: string) {
   const supabase = getSupabaseBrowserClient();
@@ -58,6 +58,18 @@ export async function ensureProfile(options?: {
 
     if (insertError) throw insertError;
 
+    // Create default user preferences for new users
+    const { error: prefsError } = await supabase.from('user_preferences').insert({
+      profile_id: user.id,
+      emergency_mode_view: false,
+      allocation_completed: true,
+      delivery_scheduled: true,
+      item_delivered: true,
+      emergency_mode_alerts: true,
+    });
+
+    if (prefsError) throw prefsError;
+
     return { id: user.id, role, created: true };
   }
 
@@ -77,9 +89,9 @@ export async function resolveAuthenticatedRoute(preferredRole?: AppRole) {
   }
 
   const profile = await ensureProfile({ role: preferredRole });
-  const role = profile?.role ?? preferredRole ?? 'donor';
+  const role = (profile?.role ?? preferredRole ?? 'donor') as AppRole;
 
-  if (role === 'corporate') {
+  if (role === 'corporate_partner') {
     return '/corporate/dashboard';
   }
 

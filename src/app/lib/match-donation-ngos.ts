@@ -218,13 +218,14 @@ export function rankNgosByDonationContext(
   condition?: ItemCondition,
   userLatest?: string,
   pledgeRouting?: PledgeRoutingPreference,
+  catalog: NgoDemandProfile[] = NGO_DEMAND_CATALOG,
 ): NgoDemandProfile[] {
   const blob = donationMatchBlob(transcript, detectedItem);
   const detectedItemLower = detectedItem.toLowerCase();
   void userLatest;
   void pledgeRouting;
 
-  return [...NGO_DEMAND_CATALOG].sort((a, b) => {
+  return [...catalog].sort((a, b) => {
     const d =
       scoreNgoForDonationContext(b, blob, detectedItemLower, condition) -
       scoreNgoForDonationContext(a, blob, detectedItemLower, condition);
@@ -244,10 +245,19 @@ export function getTopMatchedReceivers(
   condition: ItemCondition | undefined,
   userLatest?: string,
   pledgeRouting?: PledgeRoutingPreference,
+  catalog: NgoDemandProfile[] = NGO_DEMAND_CATALOG,
 ): PlanReceiver[] {
   void userLatest;
   void pledgeRouting;
-  const ranked = rankNgosByDonationContext(transcript, detectedItem, condition);
+  const workingCatalog = catalog.length >= 2 ? catalog : NGO_DEMAND_CATALOG;
+  const ranked = rankNgosByDonationContext(
+    transcript,
+    detectedItem,
+    condition,
+    userLatest,
+    pledgeRouting,
+    workingCatalog,
+  );
 
   const [a, b] = pickInKindReceiverPair(ranked);
   return [mkReceiverInKind(a, 60), mkReceiverInKind(b, 40)];

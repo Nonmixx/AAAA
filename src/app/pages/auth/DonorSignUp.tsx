@@ -5,7 +5,7 @@ import { Heart, Mail, Lock, User, Phone, Eye, EyeOff, CheckCircle2 } from 'lucid
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { ensureProfile, ensureSessionAfterSignUp, resolveAuthenticatedRoute } from '@/lib/supabase/auth';
 
-export function DonorSignUp() {
+export function DonorSignUp({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -26,6 +26,13 @@ export function DonorSignUp() {
     let isMounted = true;
 
     const redirectAuthenticatedUser = async () => {
+      // On `/signup` (embedded), never skip straight to the donor app: user must sign up (or use another
+      // account) and sign in via `/login` first. A leftover session would otherwise `replace` to dashboard.
+      if (embedded) {
+        if (isMounted) setCheckingSession(false);
+        return;
+      }
+
       try {
         const route = await resolveAuthenticatedRoute();
         if (route && isMounted) {
@@ -46,7 +53,7 @@ export function DonorSignUp() {
     return () => {
       isMounted = false;
     };
-  }, [router]);
+  }, [router, embedded]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -108,8 +115,9 @@ export function DonorSignUp() {
         return;
       }
 
-      const route = await resolveAuthenticatedRoute('donor');
-      router.push(route ?? '/donor/dashboard');
+      // Profile is created while signed in; then sign out so the user logs in explicitly on /login.
+      await supabase.auth.signOut();
+      router.replace('/login?registered=1&role=donor');
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Unable to create account.');
     } finally {
@@ -119,24 +127,20 @@ export function DonorSignUp() {
 
   if (checkingSession) {
     return (
-      <div className="w-full max-w-md rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl">
+      <div
+        className={
+          embedded
+            ? 'py-8 text-center text-sm text-gray-500'
+            : 'w-full max-w-md rounded-lg bg-white px-8 py-12 text-center text-sm text-gray-500 shadow-xl'
+        }
+      >
         Checking your session...
       </div>
     );
   }
 
-  return (
-    <div className="w-full max-w-md">
-      {/* Header */}
-      <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center w-16 h-16 bg-[#da1a32] rounded-lg mb-4 shadow-lg">
-          <Heart className="w-8 h-8 text-white" fill="white" />
-        </div>
-        <h1 className="text-3xl mb-2 text-white font-bold">Create Donor Account</h1>
-        <p className="text-white opacity-80">Join thousands making a difference every day</p>
-      </div>
-
-      <div className="bg-white rounded-lg shadow-xl p-8">
+  const formBody = (
+    <>
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Full Name */}
           <div>
@@ -303,21 +307,49 @@ export function DonorSignUp() {
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <p className="text-sm text-gray-600">
-            Already have an account?{' '}
-            <Link href="/login" className="text-[#da1a32] hover:text-[#b01528] font-medium">
-              Login
-            </Link>
-          </p>
-        </div>
+        {!embedded ? (
+          <div className="mt-6 text-center">
+            <p className="text-sm text-gray-600">
+              Already have an account?{' '}
+              <Link href="/login" className="text-[#da1a32] hover:text-[#b01528] font-medium">
+                Login
+              </Link>
+            </p>
+          </div>
+        ) : null}
 
-        <div className="mt-3 text-center">
-          <Link href="/signup" className="text-sm text-gray-400 hover:text-gray-600">
-            ← Back to role selection
-          </Link>
-        </div>
+        {!embedded ? (
+          <div className="mt-3 text-center">
+            <Link href="/signup" className="text-sm text-gray-400 hover:text-gray-600">
+              ← Back to role selection
+            </Link>
+          </div>
+        ) : null}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="w-full border-t border-[#e5e5e5] pt-6 mt-2">
+        <p className="text-sm text-gray-600 mb-4">
+          Complete your donor account below. You will be redirected to login after registration.
+        </p>
+        {formBody}
       </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-md">
+      <div className="text-center mb-8">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-[#da1a32] rounded-lg mb-4 shadow-lg">
+          <Heart className="w-8 h-8 text-white" fill="white" />
+        </div>
+        <h1 className="text-3xl mb-2 text-white font-bold">Create Donor Account</h1>
+        <p className="text-white opacity-80">Join thousands making a difference every day</p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow-xl p-8">{formBody}</div>
     </div>
   );
 }
